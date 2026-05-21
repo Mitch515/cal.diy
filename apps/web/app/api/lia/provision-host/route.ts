@@ -19,6 +19,7 @@ const provisionHostSchema = z.object({
   username: z.string().trim().min(1).optional(),
   timeZone: z.string().trim().min(1).default("America/Toronto"),
   brandColor: z.string().trim().min(1).optional(),
+  darkBrandColor: z.string().trim().min(1).optional(),
   theme: z.string().trim().min(1).optional(),
   metadata: z.record(z.unknown()).optional(),
   publicBookingBaseUrl: z.string().trim().min(1).optional(),
@@ -89,6 +90,9 @@ async function upsertProvisionedUser(input: z.infer<typeof provisionHostSchema>)
         completedOnboarding: true,
         locale: "en",
         ...(input.brandColor ? { brandColor: input.brandColor } : {}),
+        ...(input.darkBrandColor ?? input.brandColor
+          ? { darkBrandColor: input.darkBrandColor ?? input.brandColor }
+          : {}),
         ...(input.theme ? { theme: input.theme } : {}),
         ...(input.metadata !== undefined
           ? { metadata: mergeMetadata(existingUser.metadata, input.metadata) }
@@ -113,6 +117,9 @@ async function upsertProvisionedUser(input: z.infer<typeof provisionHostSchema>)
       identityProvider: IdentityProvider.CAL,
       creationSource: CreationSource.WEBAPP,
       ...(input.brandColor ? { brandColor: input.brandColor } : {}),
+      ...(input.darkBrandColor ?? input.brandColor
+        ? { darkBrandColor: input.darkBrandColor ?? input.brandColor }
+        : {}),
       ...(input.theme ? { theme: input.theme } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonObject } : {}),
       schedules: {

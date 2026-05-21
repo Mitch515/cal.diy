@@ -24,6 +24,7 @@ const upsertEventTypeSchema = z
     timeZone: z.string().trim().min(1),
     status: z.enum(["draft", "active", "disabled"]).default("active"),
     brandColor: z.string().trim().min(1).optional(),
+    darkBrandColor: z.string().trim().min(1).optional(),
     theme: z.string().trim().min(1).optional(),
     metadata: z.record(z.unknown()).optional(),
     publicBookingBaseUrl: z.string().trim().min(1).optional(),
@@ -76,11 +77,26 @@ async function upsertLiaEventType(input: z.infer<typeof upsertEventTypeSchema>) 
       ...(input.username ? { username: input.username } : {}),
       ...(input.email ? { email: input.email } : {}),
     },
-    select: { id: true, username: true },
+    select: { id: true, username: true, metadata: true },
   });
 
   if (!user) {
     return null;
+  }
+
+  if (input.brandColor || input.darkBrandColor || input.theme || input.metadata !== undefined) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        ...(input.brandColor ? { brandColor: input.brandColor } : {}),
+        ...(input.darkBrandColor ?? input.brandColor
+          ? { darkBrandColor: input.darkBrandColor ?? input.brandColor }
+          : {}),
+        ...(input.theme ? { theme: input.theme } : {}),
+        ...(input.metadata !== undefined ? { metadata: mergeMetadata(user.metadata, input.metadata) } : {}),
+      },
+      select: { id: true },
+    });
   }
 
   const existingEventType = input.id
