@@ -24,7 +24,8 @@ const provisionHostSchema = z.object({
 });
 
 async function handler(req: NextRequest) {
-  const configuredSecret = process.env.LIA_INTERNAL_SECRET;
+  const configuredSecret =
+    process.env.LIA_INTERNAL_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (!configuredSecret) {
     return NextResponse.json(
       { message: "LIA provisioning is not configured" },
