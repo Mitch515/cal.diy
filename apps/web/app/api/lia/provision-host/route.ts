@@ -1,17 +1,14 @@
+import { PrismaApiKeyRepository } from "@calcom/features/api-keys-legacy/api-keys/repositories/PrismaApiKeyRepository";
+import { DEFAULT_SCHEDULE, getAvailabilityFromSchedule } from "@calcom/lib/availability";
+import { emailRegex } from "@calcom/lib/emailSchema";
+import slugify from "@calcom/lib/slugify";
+import prisma from "@calcom/prisma";
+import type { Prisma } from "@calcom/prisma/client";
+import { CreationSource, IdentityProvider } from "@calcom/prisma/enums";
 import { defaultResponderForAppDir } from "app/api/defaultResponderForAppDir";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import z from "zod";
-
-import { PrismaApiKeyRepository } from "@calcom/features/api-keys-legacy/api-keys/repositories/PrismaApiKeyRepository";
-import {
-  DEFAULT_SCHEDULE,
-  getAvailabilityFromSchedule,
-} from "@calcom/lib/availability";
-import { emailRegex } from "@calcom/lib/emailSchema";
-import slugify from "@calcom/lib/slugify";
-import prisma from "@calcom/prisma";
-import { CreationSource, IdentityProvider } from "@calcom/prisma/enums";
 
 const provisionHostSchema = z.object({
   email: z
@@ -21,33 +18,25 @@ const provisionHostSchema = z.object({
   name: z.string().trim().min(1).optional(),
   username: z.string().trim().min(1).optional(),
   timeZone: z.string().trim().min(1).default("America/Toronto"),
+  brandColor: z.string().trim().min(1).optional(),
+  theme: z.string().trim().min(1).optional(),
+  metadata: z.record(z.unknown()).optional(),
+  publicBookingBaseUrl: z.string().trim().min(1).optional(),
 });
 
 async function handler(req: NextRequest) {
-  const configuredSecret =
-    process.env.LIA_INTERNAL_SECRET ?? process.env.NEXTAUTH_SECRET;
+  const configuredSecret = process.env.LIA_INTERNAL_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (!configuredSecret) {
-    return NextResponse.json(
-      { message: "LIA provisioning is not configured" },
-      { status: 503 },
-    );
+    return NextResponse.json({ message: "LIA provisioning is not configured" }, { status: 503 });
   }
 
   if (req.headers.get("x-lia-internal-secret") !== configuredSecret) {
-    return NextResponse.json(
-      { message: "Invalid LIA provisioning secret" },
-      { status: 403 },
-    );
+    return NextResponse.json({ message: "Invalid LIA provisioning secret" }, { status: 403 });
   }
 
-  const parsed = provisionHostSchema.safeParse(
-    await req.json().catch(() => null),
-  );
+  const parsed = provisionHostSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
-    return NextResponse.json(
-      { message: parsed.error.message },
-      { status: 400 },
-    );
+    return NextResponse.json({ message: parsed.error.message }, { status: 400 });
   }
 
   const input = parsed.data;
@@ -73,9 +62,7 @@ async function handler(req: NextRequest) {
 
 export const POST = defaultResponderForAppDir(handler);
 
-async function upsertProvisionedUser(
-  input: z.infer<typeof provisionHostSchema>,
-) {
+async function upsertProvisionedUser(input: z.infer<typeof provisionHostSchema>) {
   const existingUser = await prisma.user.findUnique({
     where: { email: input.email },
     select: {
@@ -85,13 +72,13 @@ async function upsertProvisionedUser(
       name: true,
       timeZone: true,
       defaultScheduleId: true,
+      metadata: true,
     },
   });
 
   if (existingUser) {
     const username =
-      existingUser.username ??
-      (await uniqueUsername(input.username ?? input.name ?? input.email));
+      existingUser.username ?? (await uniqueUsername(input.username ?? input.name ?? input.email));
     const updatedUser = await prisma.user.update({
       where: { id: existingUser.id },
       data: {
@@ -101,20 +88,19 @@ async function upsertProvisionedUser(
         emailVerified: new Date(),
         completedOnboarding: true,
         locale: "en",
+        ...(input.brandColor ? { brandColor: input.brandColor } : {}),
+        ...(input.theme ? { theme: input.theme } : {}),
+        ...(input.metadata !== undefined
+          ? { metadata: mergeMetadata(existingUser.metadata, input.metadata) }
+          : {}),
       },
       select: provisionedUserSelect,
     });
-    await ensureDefaultSchedule(
-      updatedUser.id,
-      updatedUser.defaultScheduleId,
-      input.timeZone,
-    );
+    await ensureDefaultSchedule(updatedUser.id, updatedUser.defaultScheduleId, input.timeZone);
     return updatedUser;
   }
 
-  const username = await uniqueUsername(
-    input.username ?? input.name ?? input.email,
-  );
+  const username = await uniqueUsername(input.username ?? input.name ?? input.email);
   const createdUser = await prisma.user.create({
     data: {
       username,
@@ -126,6 +112,9 @@ async function upsertProvisionedUser(
       locale: "en",
       identityProvider: IdentityProvider.CAL,
       creationSource: CreationSource.WEBAPP,
+      ...(input.brandColor ? { brandColor: input.brandColor } : {}),
+      ...(input.theme ? { theme: input.theme } : {}),
+      ...(input.metadata !== undefined ? { metadata: input.metadata as Prisma.InputJsonObject } : {}),
       schedules: {
         create: {
           name: "Working Hours",
@@ -140,11 +129,7 @@ async function upsertProvisionedUser(
     },
     select: provisionedUserSelect,
   });
-  await ensureDefaultSchedule(
-    createdUser.id,
-    createdUser.defaultScheduleId,
-    input.timeZone,
-  );
+  await ensureDefaultSchedule(createdUser.id, createdUser.defaultScheduleId, input.timeZone);
   return createdUser;
 }
 
@@ -157,11 +142,7 @@ const provisionedUserSelect = {
   defaultScheduleId: true,
 } as const;
 
-async function ensureDefaultSchedule(
-  userId: number,
-  defaultScheduleId: number | null,
-  timeZone: string,
-) {
+async function ensureDefaultSchedule(userId: number, defaultScheduleId: number | null, timeZone: string) {
   if (defaultScheduleId) return;
 
   const existingSchedule = await prisma.schedule.findFirst({
@@ -195,9 +176,7 @@ async function ensureDefaultSchedule(
 }
 
 async function uniqueUsername(value: string) {
-  const base = slugify(
-    value.includes("@") ? (value.split("@")[0] ?? value) : value,
-  );
+  const base = slugify(value.includes("@") ? (value.split("@")[0] ?? value) : value);
   const fallback = base || "lia-host";
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -210,4 +189,16 @@ async function uniqueUsername(value: string) {
   }
 
   return `${fallback}-${Date.now()}`;
+}
+
+function mergeMetadata(existingMetadata: Prisma.JsonValue | null, incomingMetadata: Record<string, unknown>) {
+  const existingObject =
+    existingMetadata && typeof existingMetadata === "object" && !Array.isArray(existingMetadata)
+      ? existingMetadata
+      : {};
+
+  return {
+    ...existingObject,
+    ...incomingMetadata,
+  } as Prisma.InputJsonObject;
 }
