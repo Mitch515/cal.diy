@@ -1,9 +1,16 @@
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID } from "crypto";
+import { OAuth2Client } from "googleapis-common";
 import { encode } from "next-auth/jwt";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-import { WEBAPP_URL } from "@calcom/lib/constants";
+import { getGoogleAppKeys } from "@calcom/app-store/googlecalendar/lib/getGoogleAppKeys";
+import {
+  GOOGLE_CALENDAR_SCOPES,
+  SCOPE_USERINFO_PROFILE,
+  WEBAPP_URL,
+  WEBAPP_URL_FOR_OAUTH,
+} from "@calcom/lib/constants";
 import prisma from "@calcom/prisma";
 
 /**
@@ -13,13 +20,14 @@ import prisma from "@calcom/prisma";
  * so they cannot reach the "Connect Google/Outlook" screen on their own. LIA
  * mints a single-use token (see /api/lia/provision-host) and sends the host a
  * link that lands here. This route consumes the token, establishes an
- * authenticated NextAuth session for exactly that host, and redirects them to
- * the calendar-connect screen.
+ * authenticated NextAuth session for exactly that host, and then sends them
+ * STRAIGHT to the calendar provider's OAuth consent screen — skipping the
+ * Cal.diy app shell, the app store, and the "install / connect your first
+ * calendar" clicks. The host just sees Google's "Allow" screen.
  *
  * IMPORTANT: this endpoint is BROWSER-FACING and must NOT require the internal
  * provisioning secret header — a browser navigation cannot set headers. The
- * single-use, short-lived VerificationToken IS the credential. The internal
- * secret only guards the server-to-server minting endpoint.
+ * single-use, short-lived VerificationToken IS the credential.
  */
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days, matches NextAuth default
@@ -35,13 +43,13 @@ export async function GET(req: NextRequest) {
   if (!token) {
     return NextResponse.json({ message: "Missing token" }, { status: 400 });
   }
+  const provider = (req.nextUrl.searchParams.get("provider") || "google").toLowerCase();
 
   const record = await prisma.verificationToken.findUnique({ where: { token } });
   const isValid =
     record && record.identifier.startsWith(TOKEN_PREFIX) && record.expires.getTime() > Date.now();
   if (!isValid) {
     if (record) {
-      // Best-effort cleanup of an expired / malformed record.
       await prisma.verificationToken.delete({ where: { id: record.id } }).catch(() => undefined);
     }
     return NextResponse.json(
@@ -78,21 +86,20 @@ export async function GET(req: NextRequest) {
       name: user.name,
       username: user.username,
       role: user.role,
-      // Single-profile users use the `usr-<id>` upId convention in this fork.
       upId: `usr-${user.id}`,
       locale: user.locale ?? "en",
       belongsToActiveTeam: false,
-      // Distinguishes this minted session in logs; harmless if unused.
       jti: randomUUID(),
     },
   });
 
+  // Send them straight to the provider's OAuth consent screen when we can.
+  const target = await resolveConnectTarget(provider, user.id, secret);
+
   const useSecureCookies = WEBAPP_URL.startsWith("https://");
   const cookiePrefix = useSecureCookies ? "__Secure-" : "";
-  const cookieName = `${cookiePrefix}next-auth.session-token`;
-
-  const res = NextResponse.redirect(new URL("/apps/installed/calendar", WEBAPP_URL), { status: 302 });
-  res.cookies.set(cookieName, sessionToken, {
+  const res = NextResponse.redirect(target, { status: 302 });
+  res.cookies.set(`${cookiePrefix}next-auth.session-token`, sessionToken, {
     httpOnly: true,
     secure: useSecureCookies,
     sameSite: useSecureCookies ? "none" : "lax",
@@ -101,4 +108,43 @@ export async function GET(req: NextRequest) {
     domain: process.env.NEXTAUTH_COOKIE_DOMAIN || undefined,
   });
   return res;
+}
+
+/**
+ * Build the destination URL. For Google we generate the OAuth consent URL
+ * inline (mirroring googlecalendar/api/add.ts), with the nonce-signed `state`
+ * the callback requires, and a same-origin `returnTo` success page so the host
+ * never lands in the Cal.diy app shell. Anything else (or any failure — e.g.
+ * the app keys not being configured) falls back to the standard connect screen.
+ */
+async function resolveConnectTarget(
+  provider: string,
+  userId: number,
+  secret: string
+): Promise<string> {
+  const fallback = new URL("/apps/installed/calendar", WEBAPP_URL).toString();
+  if (provider !== "google") return fallback;
+  try {
+    const { client_id, client_secret } = await getGoogleAppKeys();
+    const nonce = randomUUID();
+    const nonceHash = createHmac("sha256", secret).update(`${nonce}:${userId}`).digest("hex");
+    const returnTo = new URL("/lia/connected", WEBAPP_URL).toString();
+    const state = JSON.stringify({
+      returnTo,
+      onErrorReturnTo: returnTo,
+      fromApp: false,
+      nonce,
+      nonceHash,
+    });
+    const redirect_uri = `${WEBAPP_URL_FOR_OAUTH}/api/integrations/googlecalendar/callback`;
+    const oAuth2Client = new OAuth2Client(client_id, client_secret, redirect_uri);
+    return oAuth2Client.generateAuthUrl({
+      access_type: "offline",
+      scope: [SCOPE_USERINFO_PROFILE, ...GOOGLE_CALENDAR_SCOPES],
+      prompt: "consent",
+      state,
+    });
+  } catch {
+    return fallback;
+  }
 }
