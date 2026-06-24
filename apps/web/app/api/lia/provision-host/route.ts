@@ -1,5 +1,8 @@
+import { randomBytes } from "crypto";
+
 import { PrismaApiKeyRepository } from "@calcom/features/api-keys-legacy/api-keys/repositories/PrismaApiKeyRepository";
 import { DEFAULT_SCHEDULE, getAvailabilityFromSchedule } from "@calcom/lib/availability";
+import { WEBAPP_URL } from "@calcom/lib/constants";
 import { emailRegex } from "@calcom/lib/emailSchema";
 import slugify from "@calcom/lib/slugify";
 import prisma from "@calcom/prisma";
@@ -9,6 +12,9 @@ import { defaultResponderForAppDir } from "app/api/defaultResponderForAppDir";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import z from "zod";
+
+const HOST_SESSION_TOKEN_PREFIX = "lia-host-session:";
+const HOST_SESSION_TOKEN_TTL_MS = 1000 * 60 * 60; // 60 minutes
 
 const provisionHostSchema = z.object({
   email: z
@@ -49,8 +55,11 @@ async function handler(req: NextRequest) {
     expiresAt: null,
   });
 
+  const onboardingUrl = await mintHostOnboardingUrl(user.id);
+
   return NextResponse.json({
     apiKey,
+    onboardingUrl,
     user: {
       id: user.id,
       username: user.username,
@@ -59,6 +68,27 @@ async function handler(req: NextRequest) {
       timeZone: user.timeZone,
     },
   });
+}
+
+/**
+ * Mint a single-use, short-lived token that lets the provisioned host land in
+ * an authenticated Cal.diy session on the calendar-connect screen without ever
+ * setting a password. Redeemed by GET /api/lia/host-session. LIA forwards the
+ * host's browser to this URL right after they choose a calendar provider.
+ */
+async function mintHostOnboardingUrl(userId: number) {
+  const identifier = `${HOST_SESSION_TOKEN_PREFIX}${userId}`;
+  // Drop any prior unredeemed token for this host so they don't accumulate.
+  await prisma.verificationToken.deleteMany({ where: { identifier } });
+  const token = randomBytes(32).toString("hex");
+  await prisma.verificationToken.create({
+    data: {
+      identifier,
+      token,
+      expires: new Date(Date.now() + HOST_SESSION_TOKEN_TTL_MS),
+    },
+  });
+  return new URL(`/api/lia/host-session?token=${token}`, WEBAPP_URL).toString();
 }
 
 export const POST = defaultResponderForAppDir(handler);
