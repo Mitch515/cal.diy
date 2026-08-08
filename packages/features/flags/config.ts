@@ -3,6 +3,8 @@
  * Maybe later on we can add string variants or numeric ones
  **/
 export type AppFlags = {
+  "team-booking-page-cache": boolean;
+  "use-api-v2-for-team-slots": boolean;
   "calendar-cache": boolean;
   "calendar-cache-serve": boolean;
   emails: boolean;
