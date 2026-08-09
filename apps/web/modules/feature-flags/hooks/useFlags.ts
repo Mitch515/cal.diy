@@ -2,6 +2,8 @@ import type { AppFlags } from "@calcom/features/flags/config";
 import { trpc } from "@calcom/trpc/react";
 
 const initialData: AppFlags = {
+  "team-booking-page-cache": false,
+  "use-api-v2-for-team-slots": false,
   "calendar-cache": false,
   "calendar-cache-serve": false,
   emails: false,
