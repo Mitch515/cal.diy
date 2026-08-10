@@ -355,6 +355,7 @@ export class AvailableSlotsService {
   private async getEventTypeId({
     slug,
     eventTypeSlug,
+    isTeamEvent,
     organizationDetails,
   }: {
     slug?: string;
@@ -364,11 +365,26 @@ export class AvailableSlotsService {
   }) {
     if (!eventTypeSlug || !slug) return null;
 
+    const eventTypeRepo = this.dependencies.eventTypeRepo;
+
+    // On a team page `slug` is the team slug, so resolving it as a username finds
+    // nothing and the lookup would fall back to matching the event slug alone —
+    // returning another owner's event type whenever the slug is not unique.
+    if (isTeamEvent) {
+      const teamEventType = await eventTypeRepo.findFirstTeamEventTypeId({
+        teamSlug: slug,
+        slug: eventTypeSlug,
+      });
+      if (!teamEventType) {
+        throw new TRPCError({ code: "NOT_FOUND" });
+      }
+      return teamEventType.id;
+    }
+
     const userId = await this.getUserIdFromUsername(
       slug,
       organizationDetails ?? { currentOrgDomain: null, isValidOrgDomain: false }
     );
-    const eventTypeRepo = this.dependencies.eventTypeRepo;
     const eventType = await eventTypeRepo.findFirstEventTypeId({ slug: eventTypeSlug, userId });
     if (!eventType) {
       throw new TRPCError({ code: "NOT_FOUND" });

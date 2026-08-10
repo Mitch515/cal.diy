@@ -1138,6 +1138,25 @@ export class EventTypeRepository implements IEventTypesRepository {
     });
   }
 
+  // Team booking pages are addressed by team slug rather than username, so the
+  // event type has to be resolved through the team. Callers that cannot supply a
+  // teamId fall through to the slug-only branch above, which returns the lowest-id
+  // event type with that slug regardless of who owns it.
+  async findFirstTeamEventTypeId({ teamSlug, slug }: { teamSlug: string; slug: string }) {
+    return this.prismaClient.eventType.findFirst({
+      where: {
+        slug,
+        team: {
+          slug: teamSlug,
+          parentId: null,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+  }
+
   async findByIdIncludeHostsAndTeam({ id }: { id: number }) {
     const eventType = await this.prismaClient.eventType.findUnique({
       where: {
