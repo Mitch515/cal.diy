@@ -22,9 +22,9 @@ import type { CredentialForCalendarServiceWithEmail } from "@calcom/types/Creden
 import type { calendar_v3 } from "@googleapis/calendar";
 import type { GaxiosResponse } from "googleapis-common";
 import { RRule } from "rrule";
-
 import { AxiosLikeResponseToFetchResponse } from "../../_utils/oauth/AxiosLikeResponseToFetchResponse";
 import { CalendarAuth } from "./CalendarAuth";
+import { runBestEffortGoogleCalendarMutation } from "./google-calendar-retry";
 
 type FreeBusyArgs = { timeMin: string; timeMax: string; items: { id: string }[] };
 
@@ -296,26 +296,40 @@ class GoogleCalendarService implements Calendar {
       }
 
       if (event && event.id && event.hangoutLink) {
-        await calendar.events.patch({
-          // Update the same event but this time we know the hangout link
-          calendarId: selectedCalendar,
-          eventId: event.id || "",
-          requestBody: {
-            description: getRichDescription({
-              ...calEvent,
-              additionalInformation: { hangoutLink: event.hangoutLink },
-            }),
-            location: getLocation({
-              videoCallData: calEvent.videoCallData,
-              additionalInformation: {
-                ...calEvent.additionalInformation,
-                hangoutLink: event.hangoutLink,
-              },
-              location: calEvent.location,
-              uid: calEvent.uid,
-            }),
-          },
-        });
+        const hangoutLink = event.hangoutLink;
+        const enrichment = await runBestEffortGoogleCalendarMutation(() =>
+          calendar.events.patch({
+            // Update the same event but this time we know the hangout link
+            calendarId: selectedCalendar,
+            eventId: event.id || "",
+            requestBody: {
+              description: getRichDescription({
+                ...calEvent,
+                additionalInformation: { hangoutLink },
+              }),
+              location: getLocation({
+                videoCallData: calEvent.videoCallData,
+                additionalInformation: {
+                  ...calEvent.additionalInformation,
+                  hangoutLink,
+                },
+                location: calEvent.location,
+                uid: calEvent.uid,
+              }),
+            },
+          })
+        );
+        if (!enrichment.ok) {
+          // The insert already succeeded and carries the Meet URL. Returning it
+          // keeps Cal.diy and Google consistent even if this cosmetic PATCH is
+          // throttled after its bounded retries.
+          this.log.warn("Google event created but rich Meet details could not be patched", {
+            selectedCalendar,
+            credentialId,
+            error:
+              enrichment.error instanceof Error ? enrichment.error.message : "Google Calendar patch failed",
+          });
+        }
       }
 
       return {
