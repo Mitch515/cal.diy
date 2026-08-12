@@ -36,7 +36,7 @@ const bookingSelect = {
   user: { select: { name: true, email: true, timeZone: true, metadata: true } },
   attendees: { select: { name: true, email: true, timeZone: true, phoneNumber: true } },
   references: { select: { type: true, meetingUrl: true } },
-  eventType: { select: { metadata: true } },
+  eventType: { select: { id: true, slug: true, title: true, metadata: true } },
 } satisfies Prisma.BookingSelect;
 
 type BookingSnapshot = Prisma.BookingGetPayload<{ select: typeof bookingSelect }>;
@@ -71,22 +71,21 @@ async function handler(req: NextRequest) {
     WebhookTriggerEvents.BOOKING_RESCHEDULED,
     WebhookTriggerEvents.BOOKING_CANCELLED,
   ];
-  const users = await prisma.user.findMany({
-    where: { email: { endsWith: `@${organizerDomain}`, mode: "insensitive" } },
-    select: { id: true },
-  });
+  const salesEventTypes = (
+    await prisma.eventType.findMany({
+      where: { owner: { email: { endsWith: `@${organizerDomain}`, mode: "insensitive" } } },
+      select: { id: true, metadata: true },
+    })
+  ).filter((eventType) => isWnSalesEventType(eventType.metadata));
+  const salesEventTypeIds = salesEventTypes.map((eventType) => eventType.id);
   const webhookIds = await Promise.all(
-    users.map(async (user) => {
-      const existing = await prisma.webhook.findUnique({
-        where: { courseIdentifier: { userId: user.id, subscriberUrl: configuredSubscriberUrl } },
-        select: { id: true },
-      });
-      const id = existing?.id ?? `lia-wn-sales-user-${user.id}`;
+    salesEventTypes.map(async (eventType) => {
+      const id = `lia-wn-sales-event-${eventType.id}`;
       const webhook = await prisma.webhook.upsert({
         where: { id },
         create: {
           id,
-          userId: user.id,
+          eventTypeId: eventType.id,
           subscriberUrl: configuredSubscriberUrl,
           secret: input.webhookSecret,
           platform: false,
@@ -94,6 +93,7 @@ async function handler(req: NextRequest) {
           eventTriggers,
         },
         update: {
+          eventTypeId: eventType.id,
           subscriberUrl: configuredSubscriberUrl,
           secret: input.webhookSecret,
           platform: false,
@@ -107,8 +107,11 @@ async function handler(req: NextRequest) {
   );
   await prisma.webhook.updateMany({
     where: {
-      id: { startsWith: "lia-wn-sales-user-", notIn: webhookIds },
       active: true,
+      OR: [
+        { id: { startsWith: "lia-wn-sales-user-" } },
+        { id: { startsWith: "lia-wn-sales-event-", notIn: webhookIds } },
+      ],
     },
     data: { active: false },
   });
@@ -117,7 +120,7 @@ async function handler(req: NextRequest) {
   const bookings = await prisma.booking.findMany({
     where: {
       updatedAt: { gte: lowerBound },
-      user: { email: { endsWith: `@${organizerDomain}`, mode: "insensitive" } },
+      eventTypeId: { in: salesEventTypeIds },
       ...(input.cursor
         ? {
             OR: [{ updatedAt: { gt: lowerBound } }, { updatedAt: lowerBound, id: { gt: input.cursor.id } }],
@@ -144,6 +147,15 @@ async function handler(req: NextRequest) {
 function runtimeEnv(name: string): string | undefined {
   const value = Reflect.get(process.env, name);
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isWnSalesEventType(metadata: Prisma.JsonValue | null): boolean {
+  const value = jsonObject(metadata);
+  return (
+    value.clientSlug === "self" &&
+    typeof value.clientConfigId === "string" &&
+    value.clientConfigId.trim().length > 0
+  );
 }
 
 export const POST = defaultResponderForAppDir(handler);
@@ -185,6 +197,15 @@ function toWebhookSnapshot(booking: BookingSnapshot) {
       ...(booking.location ? { location: booking.location } : {}),
       responses: booking.responses,
       metadata,
+      ...(booking.eventType
+        ? {
+            eventType: {
+              id: booking.eventType.id,
+              slug: booking.eventType.slug,
+              title: booking.eventType.title,
+            },
+          }
+        : {}),
       conferenceData: booking.references.flatMap((reference) =>
         reference.meetingUrl ? [{ type: reference.type, meetingUrl: reference.meetingUrl }] : []
       ),
