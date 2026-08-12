@@ -42,9 +42,12 @@ const bookingSelect = {
 type BookingSnapshot = Prisma.BookingGetPayload<{ select: typeof bookingSelect }>;
 
 async function handler(req: NextRequest) {
-  const configuredSecret = process.env.LIA_INTERNAL_SECRET ?? process.env.NEXTAUTH_SECRET;
-  const configuredSubscriberUrl = process.env.LIA_BOOKING_WEBHOOK_URL;
-  const organizerDomain = process.env.LIA_BOOKING_ORGANIZER_DOMAIN?.trim().toLowerCase();
+  // Turbopack can replace direct process.env reads while building the server
+  // bundle. Railway injects these values into the running container, so keep
+  // the lookup dynamic and read the runtime environment on every request.
+  const configuredSecret = runtimeEnv("LIA_INTERNAL_SECRET") ?? runtimeEnv("NEXTAUTH_SECRET");
+  const configuredSubscriberUrl = runtimeEnv("LIA_BOOKING_WEBHOOK_URL");
+  const organizerDomain = runtimeEnv("LIA_BOOKING_ORGANIZER_DOMAIN")?.trim().toLowerCase();
   if (!configuredSecret || !configuredSubscriberUrl || !organizerDomain) {
     return NextResponse.json({ message: "LIA booking sync is not configured" }, { status: 503 });
   }
@@ -136,6 +139,11 @@ async function handler(req: NextRequest) {
       : (input.cursor ?? null),
     hasMore: bookings.length === input.limit,
   });
+}
+
+function runtimeEnv(name: string): string | undefined {
+  const value = Reflect.get(process.env, name);
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export const POST = defaultResponderForAppDir(handler);
