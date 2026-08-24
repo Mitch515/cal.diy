@@ -1,12 +1,8 @@
-import type { NextApiRequest, NextApiResponse } from "next";
 import { stringify } from "node:querystring";
-
-import { WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
-
+import { MICROSOFT_CALENDAR_AND_TEAMS_SCOPES, WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
+import type { NextApiRequest, NextApiResponse } from "next";
 import getAppKeysFromSlug from "../../_utils/getAppKeysFromSlug";
 import { encodeOAuthState } from "../../_utils/oauth/encodeOAuthState";
-
-const scopes = ["User.Read", "Calendars.Read", "Calendars.ReadWrite", "offline_access"];
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
@@ -17,7 +13,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const state = encodeOAuthState(req);
     const params = {
       response_type: "code",
-      scope: scopes.join(" "),
+      scope: MICROSOFT_CALENDAR_AND_TEAMS_SCOPES.join(" "),
       client_id: clientId,
       prompt: "select_account",
       redirect_uri: `${WEBAPP_URL_FOR_OAUTH}/api/integrations/office365calendar/callback`,

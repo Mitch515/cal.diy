@@ -1,3 +1,5 @@
+import process from "node:process";
+import { MSTeamsLocationType } from "@calcom/app-store/constants";
 import { WEBAPP_URL } from "@calcom/lib/constants";
 import { emailRegex } from "@calcom/lib/emailSchema";
 import prisma from "@calcom/prisma";
@@ -84,12 +86,17 @@ async function upsertLiaEventType(input: z.infer<typeof upsertEventTypeSchema>) 
     return null;
   }
 
+  const teamsCredential = await prisma.credential.findFirst({
+    where: { userId: user.id, appId: "msteams", type: "office365_video" },
+    select: { id: true },
+  });
+
   if (input.brandColor || input.darkBrandColor || input.theme || input.metadata !== undefined) {
     await prisma.user.update({
       where: { id: user.id },
       data: {
         ...(input.brandColor ? { brandColor: input.brandColor } : {}),
-        ...(input.darkBrandColor ?? input.brandColor
+        ...((input.darkBrandColor ?? input.brandColor)
           ? { darkBrandColor: input.darkBrandColor ?? input.brandColor }
           : {}),
         ...(input.theme ? { theme: input.theme } : {}),
@@ -117,6 +124,9 @@ async function upsertLiaEventType(input: z.infer<typeof upsertEventTypeSchema>) 
     length: input.durationMinutes,
     hidden,
     timeZone: input.timeZone,
+    ...(teamsCredential
+      ? { locations: [{ type: MSTeamsLocationType, credentialId: teamsCredential.id }] }
+      : {}),
     ...(input.metadata !== undefined
       ? {
           metadata: mergeMetadata(existingEventType?.metadata ?? null, input.metadata),

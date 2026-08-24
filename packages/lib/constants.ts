@@ -3,6 +3,8 @@
  * prepends https:// to make it valid for URL parsing.
  * This handles cases where environment variables have their protocol stripped
  */
+import process from "node:process";
+
 function ensureProtocol(url: string | undefined): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
@@ -286,3 +288,5 @@ export const MICROSOFT_CALENDAR_SCOPES = [
   "Calendars.ReadWrite",
   "offline_access",
 ];
+
+export const MICROSOFT_CALENDAR_AND_TEAMS_SCOPES = [...MICROSOFT_CALENDAR_SCOPES, "OnlineMeetings.ReadWrite"];

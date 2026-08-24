@@ -1,19 +1,16 @@
-import type { Calendar as OfficeCalendar } from "@microsoft/microsoft-graph-types-beta";
-import type { NextApiRequest, NextApiResponse } from "next";
-
 import { renewSelectedCalendarCredentialId } from "@calcom/lib/connectedCalendar";
-import { WEBAPP_URL, WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
+import { MICROSOFT_CALENDAR_AND_TEAMS_SCOPES, WEBAPP_URL, WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
 import { handleErrorsJson } from "@calcom/lib/errors";
 import { getSafeRedirectUrl } from "@calcom/lib/getSafeRedirectUrl";
 import logger from "@calcom/lib/logger";
 import prisma from "@calcom/prisma";
 import { Prisma } from "@calcom/prisma/client";
-
+import type { Calendar as OfficeCalendar } from "@microsoft/microsoft-graph-types-beta";
+import type { NextApiRequest, NextApiResponse } from "next";
 import getAppKeysFromSlug from "../../_utils/getAppKeysFromSlug";
 import getInstalledAppPath from "../../_utils/getInstalledAppPath";
 import { decodeOAuthState } from "../../_utils/oauth/decodeOAuthState";
-
-const scopes = ["offline_access", "Calendars.Read", "Calendars.ReadWrite"];
+import { ensureMicrosoftTeamsConnection } from "../lib/ensureMicrosoftTeamsConnection";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { code } = req.query;
@@ -49,7 +46,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     client_id: clientId,
     grant_type: "authorization_code",
     code,
-    scope: scopes.join(" "),
+    scope: MICROSOFT_CALENDAR_AND_TEAMS_SCOPES.join(" "),
     redirect_uri: `${WEBAPP_URL_FOR_OAUTH}/api/integrations/office365calendar/callback`,
     client_secret: clientSecret,
   });
@@ -80,7 +77,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // Set the isDefaultCalendar as selectedCalendar
   // If a user has multiple calendars, keep on making calls until we find the default calendar
-  let defaultCalendar: OfficeCalendar | undefined = undefined;
+  let defaultCalendar: OfficeCalendar | undefined;
   let requestUrl = "https://graph.microsoft.com/v1.0/me/calendars?$select=id,isDefaultCalendar";
   let finishedParsingCalendars = false;
 
@@ -160,6 +157,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         // it is possible a selectedCalendar was orphaned, in this situation-
         // we want to recover by connecting the existing selectedCalendar to the new Credential.
         if (await renewSelectedCalendarCredentialId(selectedCalendarWhereUnique, credential.id)) {
+          await ensureMicrosoftTeamsConnection({
+            userId: req.session.user.id,
+            key: responseBody,
+          });
           res.redirect(
             getSafeRedirectUrl(state?.returnTo) ??
               getInstalledAppPath({ variant: "calendar", slug: "office365-calendar" })
@@ -178,6 +179,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       );
       return;
     }
+
+    await ensureMicrosoftTeamsConnection({
+      userId: req.session.user.id,
+      key: responseBody,
+    });
   }
 
   res.redirect(

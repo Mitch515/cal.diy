@@ -1,29 +1,23 @@
-import { createHmac, randomUUID } from "crypto";
-import { OAuth2Client } from "googleapis-common";
-import { encode } from "next-auth/jwt";
+import { createHmac, randomUUID } from "node:crypto";
+import process from "node:process";
+import getAppKeysFromSlug from "@calcom/app-store/_utils/getAppKeysFromSlug";
+import { MICROSOFT_CALENDAR_AND_TEAMS_SCOPES, WEBAPP_URL, WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
+import prisma from "@calcom/prisma";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-
-import { getGoogleAppKeys } from "@calcom/app-store/googlecalendar/lib/getGoogleAppKeys";
-import {
-  GOOGLE_CALENDAR_SCOPES,
-  SCOPE_USERINFO_PROFILE,
-  WEBAPP_URL,
-  WEBAPP_URL_FOR_OAUTH,
-} from "@calcom/lib/constants";
-import prisma from "@calcom/prisma";
+import { encode } from "next-auth/jwt";
 
 /**
  * LIA host onboarding bridge.
  *
  * A LIA-provisioned booking host has no password and cannot log into Cal.diy,
- * so they cannot reach the "Connect Google/Outlook" screen on their own. LIA
+ * so they cannot reach the "Connect Outlook" screen on their own. LIA
  * mints a single-use token (see /api/lia/provision-host) and sends the host a
  * link that lands here. This route consumes the token, establishes an
  * authenticated NextAuth session for exactly that host, and then sends them
- * STRAIGHT to the calendar provider's OAuth consent screen — skipping the
+ * straight to Microsoft's OAuth consent screen, skipping the
  * Cal.diy app shell, the app store, and the "install / connect your first
- * calendar" clicks. The host just sees Google's "Allow" screen.
+ * calendar" clicks. One consent connects Outlook Calendar and Teams.
  *
  * IMPORTANT: this endpoint is BROWSER-FACING and must NOT require the internal
  * provisioning secret header — a browser navigation cannot set headers. The
@@ -43,8 +37,6 @@ export async function GET(req: NextRequest) {
   if (!token) {
     return NextResponse.json({ message: "Missing token" }, { status: 400 });
   }
-  const provider = (req.nextUrl.searchParams.get("provider") || "google").toLowerCase();
-
   const record = await prisma.verificationToken.findUnique({ where: { token } });
   const isValid =
     record && record.identifier.startsWith(TOKEN_PREFIX) && record.expires.getTime() > Date.now();
@@ -93,8 +85,8 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  // Send them straight to the provider's OAuth consent screen when we can.
-  const target = await resolveConnectTarget(provider, user.id, secret);
+  // Send them straight to Microsoft's OAuth consent screen when we can.
+  const target = await resolveConnectTarget(user.id, user.email, secret);
 
   const useSecureCookies = WEBAPP_URL.startsWith("https://");
   const cookiePrefix = useSecureCookies ? "__Secure-" : "";
@@ -111,21 +103,22 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * Build the destination URL. For Google we generate the OAuth consent URL
- * inline (mirroring googlecalendar/api/add.ts), with the nonce-signed `state`
+ * Build Microsoft's OAuth consent URL inline, with the nonce-signed `state`
  * the callback requires, and a same-origin `returnTo` success page so the host
- * never lands in the Cal.diy app shell. Anything else (or any failure — e.g.
- * the app keys not being configured) falls back to the standard connect screen.
+ * never lands in the Cal.diy app shell. A configuration failure falls back to
+ * the standard connect screen.
  */
-async function resolveConnectTarget(
-  provider: string,
+export async function resolveConnectTarget(
   userId: number,
-  secret: string
+  userEmail: string,
+  secret: string,
+  getAppKeys: typeof getAppKeysFromSlug = getAppKeysFromSlug
 ): Promise<string> {
   const fallback = new URL("/apps/installed/calendar", WEBAPP_URL).toString();
-  if (provider !== "google") return fallback;
   try {
-    const { client_id, client_secret } = await getGoogleAppKeys();
+    const appKeys = await getAppKeys("office365-calendar");
+    const clientId = typeof appKeys.client_id === "string" ? appKeys.client_id : "";
+    if (!clientId) return fallback;
     const nonce = randomUUID();
     const nonceHash = createHmac("sha256", secret).update(`${nonce}:${userId}`).digest("hex");
     const returnTo = new URL("/lia/connected", WEBAPP_URL).toString();
@@ -136,14 +129,16 @@ async function resolveConnectTarget(
       nonce,
       nonceHash,
     });
-    const redirect_uri = `${WEBAPP_URL_FOR_OAUTH}/api/integrations/googlecalendar/callback`;
-    const oAuth2Client = new OAuth2Client(client_id, client_secret, redirect_uri);
-    return oAuth2Client.generateAuthUrl({
-      access_type: "offline",
-      scope: [SCOPE_USERINFO_PROFILE, ...GOOGLE_CALENDAR_SCOPES],
-      prompt: "consent",
+    const params = new URLSearchParams({
+      response_type: "code",
+      scope: MICROSOFT_CALENDAR_AND_TEAMS_SCOPES.join(" "),
+      client_id: clientId,
+      prompt: "select_account",
+      login_hint: userEmail,
+      redirect_uri: `${WEBAPP_URL_FOR_OAUTH}/api/integrations/office365calendar/callback`,
       state,
     });
+    return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`;
   } catch {
     return fallback;
   }
