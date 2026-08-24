@@ -1,5 +1,11 @@
+import process from "node:process";
 export const OUTLOOK_CLIENT_ID = process.env.MS_GRAPH_CLIENT_ID;
 export const OUTLOOK_CLIENT_SECRET = process.env.MS_GRAPH_CLIENT_SECRET;
+export const getOutlookTenantId = () => {
+  const configuredTenantId = process.env.MS_GRAPH_TENANT_ID;
+  return configuredTenantId && /^[a-zA-Z0-9.-]+$/.test(configuredTenantId) ? configuredTenantId : "common";
+};
+export const OUTLOOK_TENANT_ID = getOutlookTenantId();
 export const OUTLOOK_LOGIN_ENABLED = process.env.OUTLOOK_LOGIN_ENABLED === "true";
 export const IS_OUTLOOK_LOGIN_ENABLED = !!(
   OUTLOOK_CLIENT_ID &&

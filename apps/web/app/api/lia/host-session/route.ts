@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import process from "node:process";
 import getAppKeysFromSlug from "@calcom/app-store/_utils/getAppKeysFromSlug";
+import { getOutlookTenantId } from "@calcom/features/auth/lib/outlook";
 import { MICROSOFT_CALENDAR_AND_TEAMS_SCOPES, WEBAPP_URL, WEBAPP_URL_FOR_OAUTH } from "@calcom/lib/constants";
 import prisma from "@calcom/prisma";
 import type { NextRequest } from "next/server";
@@ -138,7 +139,7 @@ export async function resolveConnectTarget(
       redirect_uri: `${WEBAPP_URL_FOR_OAUTH}/api/integrations/office365calendar/callback`,
       state,
     });
-    return `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`;
+    return `https://login.microsoftonline.com/${getOutlookTenantId()}/oauth2/v2.0/authorize?${params.toString()}`;
   } catch {
     return fallback;
   }

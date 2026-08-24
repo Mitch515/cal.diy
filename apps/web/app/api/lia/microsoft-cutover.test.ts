@@ -30,6 +30,7 @@ import { resolveConnectTarget } from "./host-session/route";
 describe("LIA Microsoft cutover", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("MS_GRAPH_TENANT_ID", "f1a52f59-393f-43d3-813f-fa1197512059");
     mocks.prisma.credential.deleteMany.mockResolvedValue({ count: 0 });
     mocks.setDefaultConferencingApp.mockResolvedValue(undefined);
   });
@@ -48,7 +49,7 @@ describe("LIA Microsoft cutover", () => {
     const url = new URL(target);
 
     expect(url.origin).toBe("https://login.microsoftonline.com");
-    expect(url.pathname).toBe("/common/oauth2/v2.0/authorize");
+    expect(url.pathname).toBe("/f1a52f59-393f-43d3-813f-fa1197512059/oauth2/v2.0/authorize");
     expect(url.searchParams.get("client_id")).toBe("microsoft-client-id");
     expect(url.searchParams.get("scope")?.split(" ")).toEqual(MICROSOFT_CALENDAR_AND_TEAMS_SCOPES);
     expect(url.searchParams.get("login_hint")).toBe("alexandre@getwealthnavigator.com");

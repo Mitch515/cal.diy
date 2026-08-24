@@ -6,7 +6,12 @@ describe("outlook", () => {
 
   afterEach(() => {
     // Restore original env completely
-    for (const key of ["MS_GRAPH_CLIENT_ID", "MS_GRAPH_CLIENT_SECRET", "OUTLOOK_LOGIN_ENABLED"]) {
+    for (const key of [
+      "MS_GRAPH_CLIENT_ID",
+      "MS_GRAPH_CLIENT_SECRET",
+      "MS_GRAPH_TENANT_ID",
+      "OUTLOOK_LOGIN_ENABLED",
+    ]) {
       if (originalEnv[key] === undefined) {
         delete process.env[key];
       } else {
@@ -26,6 +31,18 @@ describe("outlook", () => {
     process.env.MS_GRAPH_CLIENT_SECRET = "test-secret";
     const { OUTLOOK_CLIENT_SECRET } = await import("./outlook");
     expect(OUTLOOK_CLIENT_SECRET).toBe("test-secret");
+  });
+
+  it("uses a configured Microsoft tenant for single-tenant applications", async () => {
+    process.env.MS_GRAPH_TENANT_ID = "f1a52f59-393f-43d3-813f-fa1197512059";
+    const { OUTLOOK_TENANT_ID } = await import("./outlook");
+    expect(OUTLOOK_TENANT_ID).toBe("f1a52f59-393f-43d3-813f-fa1197512059");
+  });
+
+  it("falls back to the common endpoint when the tenant value is unsafe", async () => {
+    process.env.MS_GRAPH_TENANT_ID = "tenant/../../common";
+    const { OUTLOOK_TENANT_ID } = await import("./outlook");
+    expect(OUTLOOK_TENANT_ID).toBe("common");
   });
 
   it("OUTLOOK_LOGIN_ENABLED is true only for exact string 'true'", async () => {

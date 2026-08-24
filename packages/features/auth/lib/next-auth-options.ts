@@ -7,6 +7,7 @@ import {
   OUTLOOK_CLIENT_ID,
   OUTLOOK_CLIENT_SECRET,
   OUTLOOK_LOGIN_ENABLED,
+  OUTLOOK_TENANT_ID,
 } from "@calcom/features/auth/lib/outlook";
 import { CredentialRepository } from "@calcom/features/credentials/repositories/CredentialRepository";
 import { buildCredentialCreateData } from "@calcom/features/credentials/services/CredentialDataService";
@@ -335,6 +336,7 @@ if (OUTLOOK_LOGIN_ENABLED && OUTLOOK_CLIENT_ID && OUTLOOK_CLIENT_SECRET) {
     AzureADProvider({
       clientId: OUTLOOK_CLIENT_ID,
       clientSecret: OUTLOOK_CLIENT_SECRET,
+      tenantId: OUTLOOK_TENANT_ID,
       allowDangerousEmailAccountLinking: true,
       authorization: {
         params: {
