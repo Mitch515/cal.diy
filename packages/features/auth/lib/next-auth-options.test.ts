@@ -1,3 +1,4 @@
+import process from "node:process";
 import { IdentityProvider, UserPermissionRole } from "@calcom/prisma/enums";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCode } from "./ErrorCode";
@@ -106,6 +107,7 @@ const mockCredentialRepoCreate = vi.fn();
 const mockBuildCredentialCreateData = vi.fn();
 const mockUpdateProfilePhotoMicrosoft = vi.fn();
 const mockUpdateProfilePhotoGoogle = vi.fn();
+const mockEnsureMicrosoftTeamsConnection = vi.fn();
 const mockGetIdentityProvider = vi.fn();
 const mockWaitUntil = vi.fn();
 const mockPrismaUserFindFirst = vi.fn();
@@ -135,6 +137,10 @@ vi.mock("@calcom/app-store/_utils/oauth/updateProfilePhotoGoogle", () => ({
   updateProfilePhotoGoogle: (...args: unknown[]) => mockUpdateProfilePhotoGoogle(...args),
 }));
 
+vi.mock("@calcom/app-store/office365calendar/lib/ensureMicrosoftTeamsConnection", () => ({
+  ensureMicrosoftTeamsConnection: (...args: unknown[]) => mockEnsureMicrosoftTeamsConnection(...args),
+}));
+
 vi.mock("@calcom/features/auth/lib/identityProviders", () => ({
   getIdentityProvider: (...args: unknown[]) => mockGetIdentityProvider(...args),
 }));
@@ -143,6 +149,7 @@ vi.mock("@calcom/features/auth/lib/outlook", () => ({
   OUTLOOK_CLIENT_ID: "mock-client-id",
   OUTLOOK_CLIENT_SECRET: "mock-client-secret",
   OUTLOOK_LOGIN_ENABLED: true,
+  OUTLOOK_TENANT_ID: "mock-tenant-id",
 }));
 
 vi.mock("@vercel/functions", () => ({
@@ -884,6 +891,7 @@ describe("Azure AD JWT callback", () => {
     mockCredentialRepoCreate.mockResolvedValue({ id: 1 });
     mockBuildCredentialCreateData.mockImplementation((data: any) => data);
     mockUpdateProfilePhotoMicrosoft.mockResolvedValue(undefined);
+    mockEnsureMicrosoftTeamsConnection.mockResolvedValue({ id: 2 });
 
     // Setup prisma mocks
     const prismaModule = await import("@calcom/prisma");
@@ -1010,6 +1018,82 @@ describe("Azure AD JWT callback", () => {
       expect(mockBuildCredentialCreateData).not.toHaveBeenCalledWith(
         expect.objectContaining({ appId: "office365-calendar" })
       );
+    });
+
+    it("installs Microsoft Teams and makes it the default when combined scopes are granted", async () => {
+      mockPrismaUserFindFirst.mockResolvedValue({
+        id: 1,
+        email: "user@example.com",
+        name: "Test",
+        username: "test",
+        role: "USER",
+        locale: "en",
+        avatarUrl: null,
+        identityProvider: "AZUREAD",
+        identityProviderId: "azure-123",
+        teams: [],
+        movedToProfileId: null,
+      });
+      mockCredentialRepoFindFirst.mockResolvedValue({ id: 99 });
+
+      await jwtCallback({
+        token: baseToken,
+        user: baseUser,
+        account: {
+          provider: "azure-ad",
+          providerAccountId: "azure-123",
+          type: "oauth",
+          access_token: "at-123",
+          refresh_token: "rt-123",
+          expires_at: 1700000000,
+          scope: "User.Read Calendars.Read Calendars.ReadWrite OnlineMeetings.ReadWrite",
+        },
+        trigger: undefined,
+        session: undefined,
+      } as any);
+
+      expect(mockEnsureMicrosoftTeamsConnection).toHaveBeenCalledWith({
+        userId: 1,
+        key: {
+          access_token: "at-123",
+          refresh_token: "rt-123",
+          email: "user@example.com",
+          expiry_date: 1700000000000,
+        },
+      });
+    });
+
+    it("does not install Microsoft Teams without online meeting consent", async () => {
+      mockPrismaUserFindFirst.mockResolvedValue({
+        id: 1,
+        email: "user@example.com",
+        name: "Test",
+        username: "test",
+        role: "USER",
+        locale: "en",
+        avatarUrl: null,
+        identityProvider: "AZUREAD",
+        identityProviderId: "azure-123",
+        teams: [],
+        movedToProfileId: null,
+      });
+      mockCredentialRepoFindFirst.mockResolvedValue({ id: 99 });
+
+      await jwtCallback({
+        token: baseToken,
+        user: baseUser,
+        account: {
+          provider: "azure-ad",
+          providerAccountId: "azure-123",
+          type: "oauth",
+          access_token: "at-123",
+          scope: "User.Read Calendars.Read Calendars.ReadWrite",
+        },
+        trigger: undefined,
+        session: undefined,
+      } as any);
+
+      expect(mockEnsureMicrosoftTeamsConnection).not.toHaveBeenCalled();
     });
 
     it("skips creation when calendar scopes are missing", async () => {

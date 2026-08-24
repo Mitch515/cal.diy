@@ -2,6 +2,7 @@ import process from "node:process";
 import { updateProfilePhotoGoogle } from "@calcom/app-store/_utils/oauth/updateProfilePhotoGoogle";
 import { updateProfilePhotoMicrosoft } from "@calcom/app-store/_utils/oauth/updateProfilePhotoMicrosoft";
 import { createGoogleCalendarServiceWithGoogleType } from "@calcom/app-store/googlecalendar/lib/CalendarService";
+import { ensureMicrosoftTeamsConnection } from "@calcom/app-store/office365calendar/lib/ensureMicrosoftTeamsConnection";
 import { getIdentityProvider } from "@calcom/features/auth/lib/identityProviders";
 import {
   OUTLOOK_CLIENT_ID,
@@ -22,6 +23,7 @@ import {
   HOSTED_CAL_FEATURES,
   IS_CALCOM,
   IS_TEAM_BILLING_ENABLED,
+  MICROSOFT_CALENDAR_AND_TEAMS_SCOPES,
   MICROSOFT_CALENDAR_SCOPES,
   WEBAPP_URL,
 } from "@calcom/lib/constants";
@@ -340,7 +342,7 @@ if (OUTLOOK_LOGIN_ENABLED && OUTLOOK_CLIENT_ID && OUTLOOK_CLIENT_SECRET) {
       allowDangerousEmailAccountLinking: true,
       authorization: {
         params: {
-          scope: ["openid", "profile", "email", ...MICROSOFT_CALENDAR_SCOPES].join(" "),
+          scope: ["openid", "profile", "email", ...MICROSOFT_CALENDAR_AND_TEAMS_SCOPES].join(" "),
           prompt: "consent",
         },
       },
@@ -727,6 +729,25 @@ export const getOptions = ({
         } else if (account.provider === "azure-ad" && account.access_token) {
           // Update profile photo even if calendar wasn't installed
           await updateProfilePhotoMicrosoft(account.access_token, Number(user.id));
+        }
+
+        const microsoftCalendarAndTeamsScopesToCheck = MICROSOFT_CALENDAR_AND_TEAMS_SCOPES.filter(
+          (scope) => scope !== "offline_access"
+        );
+        if (
+          account.provider === "azure-ad" &&
+          account.access_token &&
+          microsoftCalendarAndTeamsScopesToCheck.every((scope) => grantedScopes.includes(scope))
+        ) {
+          await ensureMicrosoftTeamsConnection({
+            userId: Number(user.id),
+            key: {
+              access_token: account.access_token,
+              ...(account.refresh_token ? { refresh_token: account.refresh_token } : {}),
+              ...(user.email ? { email: user.email } : {}),
+              ...(account.expires_at ? { expiry_date: account.expires_at * 1000 } : {}),
+            },
+          });
         }
 
         const allProfiles = await ProfileRepository.findAllProfilesForUserIncludingMovedUser(existingUser);
