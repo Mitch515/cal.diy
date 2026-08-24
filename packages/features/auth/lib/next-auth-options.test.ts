@@ -543,6 +543,32 @@ describe("Azure AD signIn callback", () => {
       expect(result).toBe(true);
     });
 
+    it("allows a tenant-managed login when tid matches the configured tenant", async () => {
+      mockPrismaUserFindFirst.mockResolvedValue({
+        id: 1,
+        email: "user@example.com",
+        accounts: [{ provider: "azure-ad" }],
+        twoFactorEnabled: false,
+        identityProvider: "AZUREAD",
+      });
+
+      const result = await signInCallback({
+        ...baseParams,
+        profile: { tid: "mock-tenant-id" } as any,
+      } as any);
+
+      expect(result).toBe(true);
+    });
+
+    it("rejects a tenant-managed login when tid does not match", async () => {
+      const result = await signInCallback({
+        ...baseParams,
+        profile: { tid: "different-tenant-id" } as any,
+      } as any);
+
+      expect(result).toBe("/auth/error?error=unverified-email");
+    });
+
     it("allows login when xms_edov is string 'true'", async () => {
       mockPrismaUserFindFirst.mockResolvedValue({
         id: 1,

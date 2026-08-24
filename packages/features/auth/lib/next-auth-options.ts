@@ -65,6 +65,7 @@ type UserWithProfiles = NonNullable<
 interface ExtendedOAuthProfile extends Profile {
   email_verified?: boolean; // Google/OIDC standard
   xms_edov?: boolean | string | number; // Azure AD specific
+  tid?: string; // Microsoft Entra tenant ID
 }
 
 // This adapts our internal user model to what NextAuth expects
@@ -866,11 +867,19 @@ export const getOptions = ({
         // Use optional chaining for safety, especially with AdapterUser potentially having different structure initially.
         const isEmailVerified = user.emailVerified || (profile as ExtendedOAuthProfile)?.email_verified;
 
-        // For Azure AD, check xms_edov (Email Domain Owner Verified) claim
-        // xms_edov returns inconsistent types: boolean for work/school, string "1" for personal accounts
-        const xmsEdov = (profile as ExtendedOAuthProfile)?.xms_edov;
+        // Microsoft can omit xms_edov for tenant-managed work accounts. A matching tid is
+        // equivalent proof here because the OAuth endpoint and app are pinned to this tenant.
+        const azureProfile = profile as ExtendedOAuthProfile;
+        const xmsEdov = azureProfile?.xms_edov;
+        const isConfiguredAzureTenant = Boolean(
+          OUTLOOK_TENANT_ID && azureProfile?.tid?.toLowerCase() === OUTLOOK_TENANT_ID.toLowerCase()
+        );
         const isAzureEmailDomainVerified =
-          xmsEdov === true || xmsEdov === "true" || xmsEdov === "1" || xmsEdov === 1;
+          xmsEdov === true ||
+          xmsEdov === "true" ||
+          xmsEdov === "1" ||
+          xmsEdov === 1 ||
+          isConfiguredAzureTenant;
 
         // Azure AD never sets email_verified in the token profile, so isEmailVerified is always
         // falsy for AZUREAD logins. Use isAzureEmailDomainVerified (xms_edov) as the equivalent
@@ -881,7 +890,11 @@ export const getOptions = ({
         if (idP === IdentityProvider.AZUREAD && !isAzureEmailDomainVerified) {
           log.error(
             "Azure AD email domain not verified (xms_edov claim)",
-            safeStringify({ emailDomain: user.email?.split("@")[1], xmsEdov })
+            safeStringify({
+              emailDomain: user.email?.split("@")[1],
+              xmsEdov,
+              tenantMatches: isConfiguredAzureTenant,
+            })
           );
           return "/auth/error?error=unverified-email";
         }
