@@ -586,12 +586,24 @@ export const getOptions = ({
 
         const existingUser = await prisma.user.findFirst({
           where: {
-            AND: [
+            OR: [
               {
-                identityProvider: idP,
+                AND: [
+                  {
+                    identityProvider: idP,
+                  },
+                  {
+                    identityProviderId: account.providerAccountId,
+                  },
+                ],
               },
               {
-                identityProviderId: account.providerAccountId,
+                accounts: {
+                  some: {
+                    provider: account.provider,
+                    providerAccountId: account.providerAccountId,
+                  },
+                },
               },
             ],
           },

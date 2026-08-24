@@ -1078,6 +1078,22 @@ describe("Azure AD JWT callback", () => {
         session: undefined,
       } as any);
 
+      expect(mockPrismaUserFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            OR: expect.arrayContaining([
+              {
+                accounts: {
+                  some: {
+                    provider: "azure-ad",
+                    providerAccountId: "azure-123",
+                  },
+                },
+              },
+            ]),
+          },
+        })
+      );
       expect(mockEnsureMicrosoftTeamsConnection).toHaveBeenCalledWith({
         userId: 1,
         key: {
