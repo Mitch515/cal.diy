@@ -39,10 +39,16 @@ describe("outlook", () => {
     expect(OUTLOOK_TENANT_ID).toBe("f1a52f59-393f-43d3-813f-fa1197512059");
   });
 
-  it("falls back to the common endpoint when the tenant value is unsafe", async () => {
+  it("falls back to the Wealth Navigator tenant when the tenant value is unsafe", async () => {
     process.env.MS_GRAPH_TENANT_ID = "tenant/../../common";
     const { OUTLOOK_TENANT_ID } = await import("./outlook");
-    expect(OUTLOOK_TENANT_ID).toBe("common");
+    expect(OUTLOOK_TENANT_ID).toBe("f1a52f59-393f-43d3-813f-fa1197512059");
+  });
+
+  it("uses the Wealth Navigator tenant when no tenant is configured", async () => {
+    delete process.env.MS_GRAPH_TENANT_ID;
+    const { OUTLOOK_TENANT_ID } = await import("./outlook");
+    expect(OUTLOOK_TENANT_ID).toBe("f1a52f59-393f-43d3-813f-fa1197512059");
   });
 
   it("OUTLOOK_LOGIN_ENABLED is true only for exact string 'true'", async () => {
