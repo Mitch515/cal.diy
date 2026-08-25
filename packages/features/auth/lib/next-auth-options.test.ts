@@ -3,6 +3,8 @@ import { IdentityProvider, UserPermissionRole } from "@calcom/prisma/enums";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCode } from "./ErrorCode";
 
+const mockAzureADProvider = vi.hoisted(() => vi.fn());
+
 // Mock dependencies
 vi.mock("@calcom/prisma", () => ({
   prisma: {
@@ -198,10 +200,29 @@ vi.mock("../signup/utils/getOrgUsernameFromEmail", () => ({
   getOrgUsernameFromEmail: vi.fn((email: string) => email.split("@")[0]),
 }));
 
-vi.mock("next-auth/providers/azure-ad", () => ({ default: vi.fn() }));
+vi.mock("next-auth/providers/azure-ad", () => ({ default: mockAzureADProvider }));
 vi.mock("next-auth/providers/credentials", () => ({ default: vi.fn(() => ({ id: "credentials" })) }));
 vi.mock("next-auth/providers/email", () => ({ default: vi.fn() }));
 vi.mock("next-auth/providers/google", () => ({ default: vi.fn() }));
+
+describe("Microsoft provider configuration", () => {
+  it("selects the work account without forcing users through consent again", async () => {
+    vi.resetModules();
+    mockAzureADProvider.mockClear();
+
+    await import("./next-auth-options");
+
+    expect(mockAzureADProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorization: {
+          params: expect.objectContaining({
+            prompt: "select_account",
+          }),
+        },
+      })
+    );
+  });
+});
 
 describe("CredentialsProvider authorize", () => {
   let authorizeCredentials: typeof import("./next-auth-options").authorizeCredentials;

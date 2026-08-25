@@ -344,7 +344,7 @@ if (OUTLOOK_LOGIN_ENABLED && OUTLOOK_CLIENT_ID && OUTLOOK_CLIENT_SECRET) {
       authorization: {
         params: {
           scope: ["openid", "profile", "email", ...MICROSOFT_CALENDAR_AND_TEAMS_SCOPES].join(" "),
-          prompt: "consent",
+          prompt: "select_account",
         },
       },
       // Azure AD returns base64-encoded picture data (~9KB) that bloats the JWT cookie.
