@@ -1,5 +1,6 @@
 import { MSTeamsLocationType } from "@calcom/app-store/constants";
 import dayjs from "@calcom/dayjs";
+import { OUTLOOK_TENANT_ID } from "@calcom/features/auth/lib/outlook";
 import { triggerDelegationCredentialErrorWebhook } from "@calcom/features/webhooks/lib/triggerDelegationCredentialErrorWebhook";
 import { getLocation, getRichDescriptionHTML } from "@calcom/lib/CalEventParser";
 import {
@@ -160,7 +161,7 @@ class Office365CalendarService implements Calendar {
       return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
     }
 
-    return "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+    return `https://login.microsoftonline.com/${OUTLOOK_TENANT_ID}/oauth2/v2.0/token`;
   }
 
   private async getAuthCredentials(isDelegated: boolean) {
