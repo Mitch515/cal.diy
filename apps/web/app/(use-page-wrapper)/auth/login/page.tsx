@@ -1,23 +1,28 @@
-import { withAppDirSsr } from "app/WithAppDirSsr";
+import { buildLegacyCtx } from "@lib/buildLegacyCtx";
+import { getServerSideProps } from "@server/lib/auth/login/getServerSideProps";
 import type { PageProps as ServerPageProps } from "app/_types";
 import { _generateMetadata } from "app/_utils";
+import { withAppDirSsr } from "app/WithAppDirSsr";
 import { cookies, headers } from "next/headers";
-
-import { buildLegacyCtx } from "@lib/buildLegacyCtx";
-
-import { getServerSideProps } from "@server/lib/auth/login/getServerSideProps";
-
 import type { PageProps as ClientPageProps } from "~/auth/login-view";
 import Login from "~/auth/login-view";
 
 export const generateMetadata = async () => {
-  return await _generateMetadata(
+  const metadata = await _generateMetadata(
     (t) => t("login"),
     (t) => t("login"),
     undefined,
     undefined,
     "/auth/login"
   );
+
+  return {
+    ...metadata,
+    robots: {
+      index: false,
+      follow: true,
+    },
+  };
 };
 
 const getData = withAppDirSsr<ClientPageProps>(getServerSideProps);
