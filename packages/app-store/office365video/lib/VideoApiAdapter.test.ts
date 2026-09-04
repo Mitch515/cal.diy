@@ -1,7 +1,5 @@
-import prismaMock from "@calcom/testing/lib/__mocks__/prismaMock";
-
-import { expect, test, vi, describe } from "vitest";
-
+import { OUTLOOK_TENANT_ID } from "@calcom/features/auth/lib/outlook";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { OAuthManager } from "../../_utils/oauth/OAuthManager";
 import { internalServerErrorResponse, successResponse } from "../../_utils/testUtils";
 import config from "../config.json";
@@ -17,6 +15,18 @@ const URLS = {
     method: "POST",
   },
 };
+
+type OAuthManagerOptions = {
+  fetchNewTokenObject: (args: { refreshToken: string | null }) => Promise<Response | null>;
+};
+
+const { oauthManagerOptions }: { oauthManagerOptions: { current: OAuthManagerOptions | null } } = vi.hoisted(
+  () => ({
+    oauthManagerOptions: {
+      current: null,
+    },
+  })
+);
 
 vi.mock("../../_utils/getParsedAppKeysFromSlug", () => ({
   default: vi.fn().mockImplementation((slug) => {
@@ -34,7 +44,8 @@ vi.mock("../../_utils/getParsedAppKeysFromSlug", () => ({
 
 const mockRequestRaw = vi.fn();
 vi.mock("../../_utils/oauth/OAuthManager", () => ({
-  OAuthManager: vi.fn().mockImplementation(function() {
+  OAuthManager: vi.fn().mockImplementation(function MockOAuthManager(options: OAuthManagerOptions) {
+    oauthManagerOptions.current = options;
     return { requestRaw: mockRequestRaw };
   }),
 }));
@@ -59,9 +70,36 @@ const testCredential = {
   encryptedKey: null,
 };
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("token refresh", () => {
+  test("uses the configured tenant endpoint for a personal credential", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    VideoApiAdapter({
+      ...testCredential,
+      teamId: null,
+      key: {
+        ...testCredential.key,
+        refresh_token: "refresh-token",
+      },
+    });
+
+    await oauthManagerOptions.current?.fetchNewTokenObject({ refreshToken: "refresh-token" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://login.microsoftonline.com/${OUTLOOK_TENANT_ID}/oauth2/v2.0/token`,
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(OUTLOOK_TENANT_ID).not.toBe("common");
+  });
+});
+
 describe("createMeeting", () => {
   test("Successful `createMeeting` call", async () => {
-
     const videoApi = VideoApiAdapter(testCredential);
 
     mockRequestRaw.mockImplementation(({ url }) => {
@@ -109,7 +147,6 @@ describe("createMeeting", () => {
   });
 
   test(" `createMeeting` when there is no joinWebUrl and only joinUrl", async () => {
-
     const videoApi = VideoApiAdapter(testCredential);
 
     mockRequestRaw.mockImplementation(({ url }) => {

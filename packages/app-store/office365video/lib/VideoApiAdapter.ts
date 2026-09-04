@@ -1,5 +1,4 @@
-import { z } from "zod";
-
+import { OUTLOOK_TENANT_ID } from "@calcom/features/auth/lib/outlook";
 import { triggerDelegationCredentialErrorWebhook } from "@calcom/features/webhooks/lib/triggerDelegationCredentialErrorWebhook";
 import {
   CalendarAppDelegationCredentialConfigurationError,
@@ -11,7 +10,7 @@ import type { CalendarEvent } from "@calcom/types/Calendar";
 import type { CredentialForCalendarServiceWithTenantId } from "@calcom/types/Credential";
 import type { PartialReference } from "@calcom/types/EventManager";
 import type { VideoApiAdapter, VideoCallData } from "@calcom/types/VideoApiAdapter";
-
+import { z } from "zod";
 import getParsedAppKeysFromSlug from "../../_utils/getParsedAppKeysFromSlug";
 import { OAuthManager } from "../../_utils/oauth/OAuthManager";
 import { oAuthManagerHelper } from "../../_utils/oauth/oAuthManagerHelper";
@@ -108,12 +107,12 @@ const TeamsVideoApiAdapter = (credential: CredentialForCalendarServiceWithTenant
         body: new URLSearchParams(params),
       });
     },
-    isTokenObjectUnusable: async function () {
+    isTokenObjectUnusable: async () => {
       // TODO: Implement this. As current implementation of CalendarService doesn't handle it. It hasn't been handled in the OAuthManager implementation as well.
       // This is a placeholder for future implementation.
       return null;
     },
-    isAccessTokenUnusable: async function () {
+    isAccessTokenUnusable: async () => {
       // TODO: Implement this
       return null;
     },
@@ -141,7 +140,7 @@ const TeamsVideoApiAdapter = (credential: CredentialForCalendarServiceWithTenant
       return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
     }
 
-    return "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+    return `https://login.microsoftonline.com/${OUTLOOK_TENANT_ID}/oauth2/v2.0/token`;
   }
 
   const translateEvent = (event: CalendarEvent) => {
@@ -264,7 +263,7 @@ const TeamsVideoApiAdapter = (credential: CredentialForCalendarServiceWithTenant
         });
       }
     },
-    deleteMeeting:() => {
+    deleteMeeting: () => {
       return Promise.resolve([]);
     },
     createMeeting: async (event: CalendarEvent): Promise<VideoCallData> => {
