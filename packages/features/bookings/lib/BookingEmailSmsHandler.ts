@@ -1,5 +1,4 @@
 import dayjs from "@calcom/dayjs";
-import { isWncNativeBooking } from "./wnc-confirmation";
 import type { BookingType } from "@calcom/features/bookings/lib/handleNewBooking/originalRescheduledBookingUtils";
 import type { EventNameObjectType } from "@calcom/features/eventtypes/lib/eventNaming";
 import { getTranslation } from "@calcom/i18n/server";
@@ -12,6 +11,7 @@ import type { EventTypeMetadata } from "@calcom/prisma/zod-utils";
 import type { AdditionalInformation, CalendarEvent, Person } from "@calcom/types/Calendar";
 import { default as cloneDeep } from "lodash/cloneDeep";
 import type { Logger } from "tslog";
+import { isWncNativeBooking } from "./wnc-confirmation";
 
 export const BookingActionMap = {
   confirmed: "BOOKING_CONFIRMED",
