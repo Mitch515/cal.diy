@@ -10,6 +10,7 @@ import logger from "@calcom/lib/logger";
 import { safeStringify } from "@calcom/lib/safeStringify";
 import { withReporting } from "@calcom/lib/sentryWrapper";
 import { prisma } from "@calcom/prisma";
+import { isWncNativeBooking } from "@calcom/features/bookings/lib/wnc-confirmation";
 import type { EventTypeMetaDataSchema } from "@calcom/prisma/zod-utils";
 import type { CalendarEvent, Person } from "@calcom/types/Calendar";
 
@@ -503,6 +504,7 @@ export const sendCancelledEmailsAndSMS = async (
   eventNameObject: Pick<EventNameObjectType, "eventName">,
   eventTypeMetadata?: EventTypeMetadata
 ) => {
+  if (await isWncNativeBooking(calEvent.uid)) return;
   const calendarEvent = formatCalEvent(calEvent);
   const emailsToSend: Promise<unknown>[] = [];
   const calEventLength = calendarEvent.length;

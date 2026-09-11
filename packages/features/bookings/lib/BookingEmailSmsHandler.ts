@@ -1,4 +1,5 @@
 import dayjs from "@calcom/dayjs";
+import { isWncNativeBooking } from "./wnc-confirmation";
 import type { BookingType } from "@calcom/features/bookings/lib/handleNewBooking/originalRescheduledBookingUtils";
 import type { EventNameObjectType } from "@calcom/features/eventtypes/lib/eventNaming";
 import { getTranslation } from "@calcom/i18n/server";
@@ -93,6 +94,8 @@ export class BookingEmailSmsHandler {
 
   public async send(payload: EmailsAndSmsSideEffectsPayload) {
     const { action, data } = payload;
+    // Native WN has one Microsoft confirmation owner; Outlook sends calendar updates.
+    if (await isWncNativeBooking(data.evt.uid)) return;
 
     if (action === BookingActionMap.rescheduled) {
       if (data.eventType.schedulingType === "ROUND_ROBIN") return this._handleRoundRobinRescheduled(data);

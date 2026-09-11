@@ -1706,6 +1706,7 @@ async function handler(
     if (!isDryRun) {
       booking = await createBooking({
         uid,
+        idempotencyKey: input.idempotencyKey,
         rescheduledBy: reqBody.rescheduledBy,
         reqBody: {
           user: reqBody.user,

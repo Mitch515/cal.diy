@@ -31,6 +31,8 @@ export type PlatformParams = {
 };
 
 export type CreateBookingMeta = {
+  /** Server-owned retry key. Never accepted from public booking data. */
+  idempotencyKey?: string;
   userId?: number;
   userUuid?: string;
   // These used to come from headers but now we're passing them as params

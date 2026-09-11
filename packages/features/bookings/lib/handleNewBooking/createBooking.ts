@@ -17,6 +17,7 @@ import type { PaymentAppData, Tracking } from "./types";
 type ReqBodyWithEnd = TgetBookingDataSchema & { end: string };
 
 type CreateBookingParams = {
+  idempotencyKey?: string;
   uid: short.SUUID;
   rescheduledBy: string | undefined;
   reqBody: {
@@ -60,6 +61,7 @@ function updateEventDetails(
 // Define the function with underscore prefix
 const _createBooking = async ({
   uid,
+  idempotencyKey,
   reqBody,
   eventType,
   input,
@@ -73,6 +75,7 @@ const _createBooking = async ({
 
   const bookingAndAssociatedData = buildNewBookingData({
     uid,
+    idempotencyKey,
     rescheduledBy,
     reqBody,
     eventType,
@@ -182,6 +185,7 @@ function buildNewBookingData(params: CreateBookingParams) {
   const eventTypeRel = getEventTypeRel(eventType.id);
   const newBookingData: Prisma.BookingCreateInput = {
     uid,
+    idempotencyKey: params.idempotencyKey,
     userPrimaryEmail: evt.organizer.email,
     responses: input.responses === null || evt.seatsPerTimeSlot ? Prisma.JsonNull : input.responses,
     title: evt.title,
