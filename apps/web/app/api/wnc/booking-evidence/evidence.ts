@@ -10,6 +10,7 @@ export interface CalendarReference {
 }
 export interface EvidenceBooking {
   uid: string;
+  eventTypeId: number | null;
   status: string;
   startTime: Date;
   endTime: Date;
@@ -20,6 +21,8 @@ export async function bookingEvidence(
   booking: EvidenceBooking,
   read: (reference: CalendarReference) => Promise<"active" | "absent">
 ) {
+  if (!booking.eventTypeId || booking.eventTypeId < 1)
+    throw new ErrorWithCode(ErrorCode.BadRequest, "The original event type is missing");
   const references = booking.references.filter((reference) => reference.type.endsWith("_calendar"));
   if (!references.length)
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Calendar references are missing");
@@ -48,6 +51,7 @@ export async function bookingEvidence(
     .digest("hex");
   return {
     uid: booking.uid,
+    eventTypeId: booking.eventTypeId,
     referenceFingerprint,
     status: booking.status === "CANCELLED" ? "cancelled" : "scheduled",
     start: booking.startTime.toISOString(),

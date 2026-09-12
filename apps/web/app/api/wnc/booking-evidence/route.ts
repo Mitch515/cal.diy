@@ -11,7 +11,23 @@ import { z } from "zod";
 import { bookingEvidence, type CalendarReference, type EvidenceBooking } from "./evidence";
 
 const uidSchema = z.string().regex(/^[A-Za-z0-9_-]{8,128}$/);
-const metadataSchema = z.object({ clientSlug: z.literal("self"), clientConfigId: z.string().min(1) });
+const salesEventSchema = z.object({
+  id: z.number().int().positive(),
+  length: z.number().int().positive(),
+  team: z.object({ slug: z.literal("wealth-navigator") }),
+});
+
+function isSalesEvent(value: object | null) {
+  const event = salesEventSchema.safeParse(value);
+  if (!event.success) return false;
+  const fitId = Number(Reflect.get(process.env, "WNC_DISCOVERY_EVENT_TYPE_ID") ?? 22);
+  const discoveryId = Number(Reflect.get(process.env, "WNC_STRATEGY_EVENT_TYPE_ID") ?? 24);
+  const duration = new Map([
+    [fitId, 15],
+    [discoveryId, 60],
+  ]).get(event.data.id);
+  return duration === event.data.length;
+}
 
 function authorized(supplied: string | null) {
   const configured = Reflect.get(process.env, "LIA_INTERNAL_SECRET");
@@ -97,15 +113,16 @@ export async function GET(request: NextRequest) {
       where: { uid: parsed.data },
       select: {
         uid: true,
+        eventTypeId: true,
         status: true,
         startTime: true,
         endTime: true,
-        eventType: { select: { metadata: true } },
+        eventType: { select: { id: true, length: true, team: { select: { slug: true } } } },
         // Deleted flags are deliberately excluded. Only provider readback proves retirement.
         references: { select: { type: true, uid: true, credentialId: true, externalCalendarId: true } },
       },
     });
-    if (!booking || !metadataSchema.safeParse(booking.eventType?.metadata).success)
+    if (!booking || !isSalesEvent(booking.eventType))
       return NextResponse.json({ error: "Sales booking not found" }, { status: 404 });
     return NextResponse.json(
       await bookingEvidence(booking, (reference) => readGoogleReference(reference, booking)),

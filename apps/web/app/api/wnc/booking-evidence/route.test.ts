@@ -22,10 +22,11 @@ import { GET } from "./route";
 
 const booking = {
   uid: "fictional-legacy",
+  eventTypeId: 22,
   status: "ACCEPTED",
   startTime: new Date("2026-09-14T20:30:00Z"),
   endTime: new Date("2026-09-14T20:45:00Z"),
-  eventType: { metadata: { clientSlug: "self", clientConfigId: "fictional" } },
+  eventType: { id: 22, length: 15, team: { slug: "wealth-navigator" } },
   references: [
     {
       type: "google_calendar",
@@ -69,6 +70,7 @@ test("authenticated evidence uses exact provider reads without exposing credenti
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({
     uid: booking.uid,
+    eventTypeId: 22,
     status: "scheduled",
     calendarState: "active",
   });
@@ -80,7 +82,10 @@ test("authenticated evidence uses exact provider reads without exposing credenti
 test("authentication and sales ownership fail before calendar access", async () => {
   expect((await GET(request("wrong"))).status).toBe(403);
   expect(mocks.booking).not.toHaveBeenCalled();
-  mocks.booking.mockResolvedValue({ ...booking, eventType: { metadata: { clientSlug: "other" } } });
+  mocks.booking.mockResolvedValue({
+    ...booking,
+    eventType: { ...booking.eventType, team: { slug: "other" } },
+  });
   expect((await GET(request())).status).toBe(404);
   expect(mocks.event).not.toHaveBeenCalled();
 });
@@ -90,6 +95,23 @@ test("event absence only counts after the exact calendar remains accessible", as
   expect(await (await GET(request())).json()).toMatchObject({ status: "cancelled", calendarState: "absent" });
   mocks.calendar.mockRejectedValue(Object.assign(new Error("Access removed"), { code: 404 }));
   expect((await GET(request())).status).toBe(503);
+});
+
+test("only configured sales event IDs and durations can supply evidence", async () => {
+  for (const eventType of [
+    { ...booking.eventType, id: 99 },
+    { ...booking.eventType, length: 60 },
+  ]) {
+    mocks.booking.mockResolvedValue({ ...booking, eventType });
+    expect((await GET(request())).status).toBe(404);
+  }
+  vi.stubEnv("WNC_DISCOVERY_EVENT_TYPE_ID", "91");
+  mocks.booking.mockResolvedValue({
+    ...booking,
+    eventTypeId: 91,
+    eventType: { ...booking.eventType, id: 91 },
+  });
+  expect(await (await GET(request())).json()).toMatchObject({ eventTypeId: 91 });
 });
 test("a cancelled Cal row with an active Google event remains active provider evidence", async () => {
   mocks.booking.mockResolvedValue({ ...booking, status: "CANCELLED" });
@@ -104,6 +126,12 @@ test("empty, unsupported and incomplete references fail closed", async () => {
     mocks.booking.mockResolvedValue({ ...booking, references });
     expect((await GET(request())).status).toBe(503);
   }
+});
+
+test("missing event type cannot authorize repairing an older import", async () => {
+  mocks.booking.mockResolvedValue({ ...booking, eventTypeId: null });
+  expect((await GET(request())).status).toBe(503);
+  expect(mocks.event).not.toHaveBeenCalled();
 });
 test("reference fingerprints survive ordering and identify removed references", async () => {
   const second = { ...booking.references[0], uid: "second-event" };

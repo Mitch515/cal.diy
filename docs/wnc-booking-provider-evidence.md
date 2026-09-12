@@ -1,16 +1,34 @@
 # WNC legacy booking evidence
 
+September 12 release verification: eight focused tests and Biome passed. All nine
+tasks in `yarn type-check:ci --force` passed after the final code changes. The
+Windows-only verification preload maps `tsc-absolute`'s extensionless `spawn tsc`
+to the same installed TypeScript CLI through Node; it is not shipped and does not
+skip type checks. The initial unmodified command reproduced Windows `ENOENT`.
+No dependency, production configuration or schema change is included.
+
+The release also fixes two gaps found against the real legacy record: WNC sales
+events have no LIA client metadata, and older WNC imports can omit the event type.
+The exact configured team event is checked here and its ID is returned as evidence.
+Unknown event IDs, wrong teams/durations and missing types are refused.
+
+Rollback before any repair is staged is a reviewed Git revert. Once WNC stages a
+repair, preserve this evidence reader until forward recovery finishes; removing
+it would block readback. It has no provider-event write operation.
+
 `GET /api/wnc/booking-evidence?uid=<uid>` supplies read-only evidence for WNC's
 independently reviewed booking-provider repair. It does not repair, create,
 cancel, reschedule or send invitations. Keep it separate from the WNC frontend
 change and do not deploy it without release authorization.
 
 Authentication uses the existing `x-lia-internal-secret` header and a constant-time
-comparison with `LIA_INTERNAL_SECRET`. Only sales event types with metadata
-`clientSlug: "self"` and a nonempty `clientConfigId` are eligible. Responses disable
+comparison with `LIA_INTERNAL_SECRET`. Only the configured WNC 15/60-minute event
+IDs in the `wealth-navigator` team are eligible, matching native booking routing.
+Legacy sales events have no LIA client metadata, so that unrelated metadata is not
+an ownership gate. Responses disable
 caching and never include credentials, attendee addresses or provider exceptions.
 
-Successful responses contain `uid`, `referenceFingerprint`, `status`
+Successful responses contain `uid`, `eventTypeId`, `referenceFingerprint`, `status`
 (`scheduled` or `cancelled`), canonical UTC `start`/`end`, and `calendarState`
 (`active` or `absent`). The fingerprint hashes the sorted calendar-reference
 identities, including provider, event ID, credential ID and external calendar ID.
