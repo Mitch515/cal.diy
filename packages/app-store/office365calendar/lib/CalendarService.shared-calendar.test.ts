@@ -155,10 +155,14 @@ describe("Microsoft shared calendar host attendance", () => {
       )
     );
     requestRaw.mockResolvedValueOnce(new Response(JSON.stringify({ id: "event" })));
-    await BuildCalendarService(credential).updateEvent("event/id=", { ...booking(), location });
+    await BuildCalendarService(credential).updateEvent(
+      "event/id=",
+      { ...booking(), location },
+      "original/shared="
+    );
     expect(requestRaw.mock.calls.map(([request]) => request.url)).toEqual([
-      "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3D",
-      "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3D",
+      "https://graph.microsoft.com/v1.0/me/calendars/original%2Fshared%3D/events/event%2Fid%3D",
+      "https://graph.microsoft.com/v1.0/me/calendars/original%2Fshared%3D/events/event%2Fid%3D",
     ]);
     expect(mutationPayload().attendees.map((a) => a.emailAddress.address)).toEqual([
       "candidate@example.com",
@@ -168,12 +172,18 @@ describe("Microsoft shared calendar host attendance", () => {
       expect(mutationPayload().body.content).toContain("Existing Teams link");
   });
 
-  it("cancels through the mailbox event endpoint, including shared-calendar events", async () => {
+  it("cancels in the booking's original shared calendar, even if the current destination changed", async () => {
     requestRaw.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await BuildCalendarService(credential).deleteEvent("event/id=", booking());
+    await BuildCalendarService(credential).deleteEvent("event/id=", booking(), "original/shared=");
     expect(requestRaw).toHaveBeenCalledWith({
-      url: "https://graph.microsoft.com/v1.0/me/events/event%2Fid%3D",
+      url: "https://graph.microsoft.com/v1.0/me/calendars/original%2Fshared%3D/events/event%2Fid%3D",
       options: { method: "DELETE" },
     });
+  });
+
+  it("supports legacy references without a saved calendar ID", async () => {
+    requestRaw.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await BuildCalendarService(credential).deleteEvent("event/id=", booking());
+    expect(requestRaw.mock.calls[0][0].url).toBe("https://graph.microsoft.com/v1.0/me/events/event%2Fid%3D");
   });
 });

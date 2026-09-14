@@ -13,6 +13,7 @@ import logger from "@calcom/lib/logger";
 import type { BufferedBusyTime } from "@calcom/types/BufferedBusyTime";
 import type {
   Calendar,
+  CalendarEvent,
   CalendarServiceEvent,
   EventBusyDate,
   GetAvailabilityParams,
@@ -321,9 +322,19 @@ class Office365CalendarService implements Calendar {
     }
   }
 
-  async updateEvent(uid: string, event: CalendarServiceEvent): Promise<NewCalendarEventType> {
+  private async getEventUrl(uid: string, externalCalendarId?: string | null) {
+    const userEndpoint = await this.getUserEndpoint();
+    const calendarPath = externalCalendarId ? `/calendars/${encodeURIComponent(externalCalendarId)}` : "";
+    return `${userEndpoint}${calendarPath}/events/${encodeURIComponent(uid)}`;
+  }
+
+  async updateEvent(
+    uid: string,
+    event: CalendarServiceEvent,
+    externalCalendarId?: string | null
+  ): Promise<NewCalendarEventType> {
     try {
-      const eventUrl = `${await this.getUserEndpoint()}/events/${encodeURIComponent(uid)}`;
+      const eventUrl = await this.getEventUrl(uid, externalCalendarId);
       // The existing event identifies the real organizer, including on shared calendars.
       const existingResponse = await this.fetcher(eventUrl, { method: "GET" });
       const rescheduledEvent = await handleErrorsJson<Event>(existingResponse);
@@ -351,14 +362,11 @@ class Office365CalendarService implements Calendar {
     }
   }
 
-  async deleteEvent(uid: string): Promise<void> {
+  async deleteEvent(uid: string, _event: CalendarEvent, externalCalendarId?: string | null): Promise<void> {
     try {
-      const response = await this.fetcher(
-        `${await this.getUserEndpoint()}/events/${encodeURIComponent(uid)}`,
-        {
-          method: "DELETE",
-        }
-      );
+      const response = await this.fetcher(await this.getEventUrl(uid, externalCalendarId), {
+        method: "DELETE",
+      });
 
       handleErrorsRaw(response);
     } catch (error) {
