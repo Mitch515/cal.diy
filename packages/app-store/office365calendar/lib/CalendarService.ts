@@ -7,11 +7,13 @@ import {
   CalendarAppDelegationCredentialConfigurationError,
   CalendarAppDelegationCredentialInvalidGrantError,
 } from "@calcom/lib/CalendarAppError";
-import { handleErrorsJson, handleErrorsRaw } from "@calcom/lib/errors";
+import { ErrorCode } from "@calcom/lib/errorCodes";
+import { ErrorWithCode, handleErrorsJson, handleErrorsRaw } from "@calcom/lib/errors";
 import logger from "@calcom/lib/logger";
 import type { BufferedBusyTime } from "@calcom/types/BufferedBusyTime";
 import type {
   Calendar,
+  CalendarEvent,
   CalendarServiceEvent,
   EventBusyDate,
   GetAvailabilityParams,
@@ -55,7 +57,6 @@ interface BodyValue {
 }
 
 class Office365CalendarService implements Calendar {
-  private url = "";
   private integrationName = "";
   private log: typeof logger;
   private auth: OAuthManager;
@@ -294,13 +295,15 @@ class Office365CalendarService implements Calendar {
         event.destinationCalendar[0])
       : undefined;
     try {
-      const eventsUrl = mainHostDestinationCalendar?.externalId
-        ? `${await this.getUserEndpoint()}/calendars/${mainHostDestinationCalendar?.externalId}/events`
-        : `${await this.getUserEndpoint()}/calendar/events`;
+      const calendarUrl = mainHostDestinationCalendar?.externalId
+        ? `${await this.getUserEndpoint()}/calendars/${encodeURIComponent(mainHostDestinationCalendar.externalId)}`
+        : `${await this.getUserEndpoint()}/calendar`;
+      const calendarResponse = await this.fetcher(`${calendarUrl}?$select=owner`, { method: "GET" });
+      const calendar = await handleErrorsJson<OfficeCalendar>(calendarResponse);
 
-      const response = await this.fetcher(eventsUrl, {
+      const response = await this.fetcher(`${calendarUrl}/events`, {
         method: "POST",
-        body: JSON.stringify(this.translateEvent(event)),
+        body: JSON.stringify(this.translateEvent(event, calendar.owner?.address)),
       });
 
       const responseJson = await handleErrorsJson<
@@ -319,21 +322,28 @@ class Office365CalendarService implements Calendar {
     }
   }
 
-  async updateEvent(uid: string, event: CalendarServiceEvent): Promise<NewCalendarEventType> {
+  private async getEventUrl(uid: string, externalCalendarId?: string | null) {
+    const userEndpoint = await this.getUserEndpoint();
+    const calendarPath = externalCalendarId ? `/calendars/${encodeURIComponent(externalCalendarId)}` : "";
+    return `${userEndpoint}${calendarPath}/events/${encodeURIComponent(uid)}`;
+  }
+
+  async updateEvent(
+    uid: string,
+    event: CalendarServiceEvent,
+    externalCalendarId?: string | null
+  ): Promise<NewCalendarEventType> {
     try {
-      let rescheduledEvent: Event | undefined;
-      if (event.location === MSTeamsLocationType) {
-        // Extract the existing body content to preserve the meeting blob, otherwise it breaks and converts it into non-onlineMeeting
-        const response = await this.fetcher(`${await this.getUserEndpoint()}/calendar/events/${uid}`, {
-          method: "GET",
-        });
+      const eventUrl = await this.getEventUrl(uid, externalCalendarId);
+      // The existing event identifies the real organizer, including on shared calendars.
+      const existingResponse = await this.fetcher(eventUrl, { method: "GET" });
+      const rescheduledEvent = await handleErrorsJson<Event>(existingResponse);
 
-        rescheduledEvent = await handleErrorsJson<Event>(response);
-      }
-
-      const response = await this.fetcher(`${await this.getUserEndpoint()}/calendar/events/${uid}`, {
+      const response = await this.fetcher(eventUrl, {
         method: "PATCH",
-        body: JSON.stringify(this.translateEvent(event, rescheduledEvent)),
+        body: JSON.stringify(
+          this.translateEvent(event, rescheduledEvent.organizer?.emailAddress?.address, rescheduledEvent)
+        ),
       });
 
       const responseJson = await handleErrorsJson<
@@ -352,9 +362,9 @@ class Office365CalendarService implements Calendar {
     }
   }
 
-  async deleteEvent(uid: string): Promise<void> {
+  async deleteEvent(uid: string, _event: CalendarEvent, externalCalendarId?: string | null): Promise<void> {
     try {
-      const response = await this.fetcher(`${await this.getUserEndpoint()}/calendar/events/${uid}`, {
+      const response = await this.fetcher(await this.getEventUrl(uid, externalCalendarId), {
         method: "DELETE",
       });
 
@@ -471,7 +481,17 @@ class Office365CalendarService implements Calendar {
     });
   }
 
-  private translateEvent = (event: CalendarServiceEvent, rescheduledEvent?: Event) => {
+  private translateEvent = (
+    event: CalendarServiceEvent,
+    calendarOwnerEmail: string | null | undefined,
+    rescheduledEvent?: Event
+  ) => {
+    if (!calendarOwnerEmail) {
+      throw new ErrorWithCode(
+        ErrorCode.InternalServerError,
+        "Microsoft calendar owner could not be verified"
+      );
+    }
     const isOnlineMeeting = event.location === MSTeamsLocationType;
     const isRescheduledOnlineMeeting = rescheduledEvent ? rescheduledEvent.isOnlineMeeting : false;
     const existingBody =
@@ -505,15 +525,6 @@ class Office365CalendarService implements Calendar {
         timeZone: event.organizer.timeZone,
       },
       hideAttendees: !event.seatsPerTimeSlot ? false : !event.seatsShowAttendees,
-      organizer: {
-        emailAddress: {
-          address: event.destinationCalendar
-            ? (event.destinationCalendar.find((cal) => cal.userId === event.organizer.id)?.externalId ??
-              event.organizer.email)
-            : event.organizer.email,
-          name: event.organizer.name,
-        },
-      },
       attendees: [
         ...event.attendees.map((attendee) => ({
           emailAddress: {
@@ -526,11 +537,9 @@ class Office365CalendarService implements Calendar {
           ? event.team.members
               .filter((member) => member.email !== this.credential.user?.email)
               .map((member) => {
-                const destinationCalendar =
-                  event.destinationCalendar &&
-                  event.destinationCalendar.find(
-                    (cal) => cal.integration === this.integrationName && cal.userId === member.id
-                  );
+                const destinationCalendar = event.destinationCalendar?.find(
+                  (cal) => cal.integration === this.integrationName && cal.userId === member.id
+                );
                 return {
                   emailAddress: {
                     address: destinationCalendar?.externalId ?? member.email,
@@ -543,6 +552,17 @@ class Office365CalendarService implements Calendar {
       ],
       location: event.location ? { displayName: getLocation(event) } : undefined,
     };
+    const hostEmail = event.organizer.email.trim().toLowerCase();
+    const hostIsAttendee = office365Event.attendees?.some(
+      (attendee) => attendee.emailAddress?.address?.trim().toLowerCase() === hostEmail
+    );
+    // Microsoft makes the shared calendar owner the organizer, so the Cal host needs an invitation.
+    if (calendarOwnerEmail.trim().toLowerCase() !== hostEmail && !hostIsAttendee) {
+      office365Event.attendees?.push({
+        emailAddress: { address: event.organizer.email, name: event.organizer.name },
+        type: "required",
+      });
+    }
     if (event.hideCalendarEventDetails) {
       office365Event.sensitivity = "private";
     }
