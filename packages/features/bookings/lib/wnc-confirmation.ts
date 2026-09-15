@@ -249,9 +249,11 @@ export async function isWncNativeBooking(uid?: string | null) {
   for (let depth = 0; current && depth < 20; depth += 1) {
     const booking = await prisma.booking.findUnique({
       where: { uid: current },
-      select: { idempotencyKey: true, fromReschedule: true },
+      select: { idempotencyKey: true, fromReschedule: true, metadata: true },
     });
     if (booking?.idempotencyKey?.startsWith("wnc:")) return true;
+    if (z.object({ wncRequestId: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(booking?.metadata).success)
+      return true;
     current = booking?.fromReschedule ?? undefined;
   }
   return false;

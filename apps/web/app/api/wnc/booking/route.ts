@@ -69,8 +69,15 @@ function configured(name: string) {
   return typeof value === "string" ? value : undefined;
 }
 async function snapshot(id: string) {
-  const booking = await prisma.booking.findUnique({
-    where: { idempotencyKey: `wnc:${id}` },
+  // Cal owns the slot collision key and clears it on cancellation. Keep our request identity separate.
+  const bookings = await prisma.booking.findMany({
+    where: {
+      OR: [
+        { idempotencyKey: `wnc:${id}` },
+        { metadata: { path: ["wncRequestId"], equals: id }, fromReschedule: null },
+      ],
+    },
+    take: 2,
     select: {
       uid: true,
       title: true,
@@ -86,6 +93,9 @@ async function snapshot(id: string) {
       references: { select: { type: true, meetingUrl: true } },
     },
   });
+  if (bookings.length > 1)
+    throw new ErrorWithCode(ErrorCode.InternalServerError, "Ambiguous WNC booking request");
+  const booking = bookings[0];
   if (!booking) return null;
   const metadata = metadataSchema.parse(booking.metadata);
   const booker = booking.attendees.find(
@@ -328,7 +338,9 @@ async function handler(req: NextRequest) {
       skipContactOwner: true,
       language: "en",
       creationSource: CreationSource.API_V1,
+      noEmail: true,
       metadata: {
+        wncRequestId: input.requestId,
         wncAttendeeEmail: input.attendee.email,
         wncAttendeeTimeZone: input.attendee.timeZone,
         wncSetterEmail: input.setterEmail,
@@ -345,15 +357,17 @@ async function handler(req: NextRequest) {
         userId: -1,
         hostname: req.nextUrl.host,
         idempotencyKey: `wnc:${input.requestId}`,
-        noEmail: true,
       },
     });
   } catch {
-    // The unique key is saved before calendar calls. A timeout or racing retry must recover that row.
+    // Request metadata is saved before calendar calls. Recover the row after a timeout or racing retry.
     const recovered = await snapshot(input.requestId);
     if (recovered) return NextResponse.json(recovered);
     return NextResponse.json({ error: "Booking failed; reload available times" }, { status: 409 });
   }
-  return NextResponse.json(await snapshot(input.requestId));
+  const receipt = await snapshot(input.requestId);
+  if (!receipt)
+    return NextResponse.json({ error: "Booking receipt unavailable; check booking status" }, { status: 503 });
+  return NextResponse.json(receipt);
 }
 export const POST = defaultResponderForAppDir(handler);
