@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ find: vi.fn(), event: vi.fn(), create: vi.fn(), slots: vi.fn() }));
 vi.mock("@calcom/prisma", () => ({
-  default: { booking: { findUnique: mocks.find }, eventType: { findUnique: mocks.event } },
+  default: { booking: { findMany: mocks.find }, eventType: { findUnique: mocks.event } },
 }));
 vi.mock("@calcom/features/bookings/di/RegularBookingService.container", () => ({
   getRegularBookingService: () => ({ createBooking: mocks.create }),
@@ -91,7 +91,7 @@ beforeEach(() => {
       },
     ],
   });
-  mocks.find.mockResolvedValue(null);
+  mocks.find.mockResolvedValue([]);
   mocks.create.mockResolvedValue({});
 });
 afterEach(() => {
@@ -120,24 +120,76 @@ test("the existing event rules supply native slots", async () => {
   });
 });
 test("uses a server-only durable retry key without internal handoff text", async () => {
-  mocks.find.mockResolvedValueOnce(null).mockResolvedValue(record);
+  mocks.find.mockResolvedValueOnce([]).mockResolvedValue([record]);
   expect((await call(input)).status).toBe(200);
   expect(mocks.create).toHaveBeenCalledWith(
     expect.objectContaining({
-      bookingMeta: expect.objectContaining({ idempotencyKey: `wnc:${requestId}`, noEmail: true }),
-      bookingData: expect.objectContaining({ eventTypeId: 22 }),
+      bookingMeta: expect.objectContaining({ idempotencyKey: `wnc:${requestId}` }),
+      bookingData: expect.objectContaining({
+        eventTypeId: 22,
+        noEmail: true,
+        metadata: expect.objectContaining({ wncRequestId: requestId }),
+      }),
     })
   );
   expect(JSON.stringify(mocks.create.mock.calls)).not.toContain("handoff");
 });
+
+test("reads the request metadata after Cal replaces the slot collision key", async () => {
+  mocks.find.mockResolvedValue([
+    { ...record, idempotencyKey: "cal-slot-key", metadata: { ...record.metadata, wncRequestId: requestId } },
+  ]);
+  const response = await call({ action: "status", requestId });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ uid: record.uid });
+  expect(mocks.find).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: {
+        OR: [
+          { idempotencyKey: `wnc:${requestId}` },
+          { metadata: { path: ["wncRequestId"], equals: requestId }, fromReschedule: null },
+        ],
+      },
+      take: 2,
+    })
+  );
+  expect(mocks.create).not.toHaveBeenCalled();
+});
+
+test("a cancelled booking remains recoverable after Cal clears the collision key", async () => {
+  mocks.find.mockResolvedValue([
+    {
+      ...record,
+      status: "CANCELLED",
+      idempotencyKey: null,
+      metadata: { ...record.metadata, wncRequestId: requestId },
+    },
+  ]);
+  const response = await call(input);
+  expect(await response.json()).toMatchObject({ uid: record.uid, status: "cancelled" });
+  expect(mocks.create).not.toHaveBeenCalled();
+});
+
+test("ambiguous request identities fail closed without creating another meeting", async () => {
+  mocks.find.mockResolvedValue([record, { ...record, uid: "different-booking" }]);
+  expect((await call(input)).status).toBe(500);
+  expect(mocks.create).not.toHaveBeenCalled();
+});
+
+test("a missing post-create receipt never returns a successful null response", async () => {
+  const response = await call(input);
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ error: "Booking receipt unavailable; check booking status" });
+  expect(mocks.create).toHaveBeenCalledTimes(1);
+});
 test("an existing key is recovered without creating another invitation", async () => {
-  mocks.find.mockResolvedValue(record);
+  mocks.find.mockResolvedValue([record]);
   const response = await call(input);
   expect(response.status).toBe(200);
   expect(mocks.create).not.toHaveBeenCalled();
 });
 test("a different setter cannot reuse the original request", async () => {
-  mocks.find.mockResolvedValue(record);
+  mocks.find.mockResolvedValue([record]);
   expect((await call({ ...input, setterEmail: "another@getwealthnavigator.com" })).status).toBe(409);
   expect(mocks.create).not.toHaveBeenCalled();
 });
@@ -164,10 +216,12 @@ test("a Google destination is blocked before any invitation", async () => {
 });
 
 test("the receipt retains the title and actual participants without adding the setter", async () => {
-  mocks.find.mockResolvedValue({
-    ...record,
-    attendees: [...record.attendees, { name: "Second closer", email: "second@getwealthnavigator.com" }],
-  });
+  mocks.find.mockResolvedValue([
+    {
+      ...record,
+      attendees: [...record.attendees, { name: "Second closer", email: "second@getwealthnavigator.com" }],
+    },
+  ]);
   const response = await call({ action: "status", requestId });
   expect(await response.json()).toMatchObject({
     title: record.title,
