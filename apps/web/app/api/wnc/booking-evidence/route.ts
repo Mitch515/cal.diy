@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import process from "node:process";
 import { createGoogleCalendarServiceWithGoogleType } from "@calcom/app-store/googlecalendar/lib/CalendarService";
+import { readOffice365Reference } from "@calcom/app-store/office365calendar/lib/CalendarService";
 import { ErrorCode } from "@calcom/lib/errorCodes";
 import { ErrorWithCode } from "@calcom/lib/errors";
 import prisma from "@calcom/prisma";
@@ -37,8 +38,12 @@ function authorized(supplied: string | null) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-async function referenceCalendar(reference: CalendarReference) {
-  if (reference.type !== "google_calendar" || !reference.externalCalendarId || !reference.credentialId) {
+async function referenceCredential(reference: CalendarReference) {
+  if (
+    !["google_calendar", "office365_calendar"].includes(reference.type) ||
+    !reference.externalCalendarId ||
+    !reference.credentialId
+  ) {
     throw new ErrorWithCode(
       ErrorCode.BadRequest,
       "This legacy reference needs a supported exact calendar reader"
@@ -56,6 +61,12 @@ async function referenceCalendar(reference: CalendarReference) {
   ) {
     throw new ErrorWithCode(ErrorCode.InternalServerError, "The original calendar credential is unavailable");
   }
+  return credential;
+}
+
+async function referenceCalendar(reference: CalendarReference) {
+  const credential = await referenceCredential(reference);
+  if (!reference.externalCalendarId) throw new ErrorWithCode(ErrorCode.BadRequest, "Missing calendar ID");
   const calendar = await createGoogleCalendarServiceWithGoogleType(credential).authedCalendar();
   // An inaccessible calendar's event 404 is not evidence that an invitation was removed.
   const ownedCalendar = await calendar.calendars.get({ calendarId: reference.externalCalendarId });
@@ -63,6 +74,18 @@ async function referenceCalendar(reference: CalendarReference) {
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Legacy calendar identity differs");
   }
   return { calendar, calendarId: reference.externalCalendarId };
+}
+
+async function readReference(
+  reference: CalendarReference,
+  booking: EvidenceBooking
+): Promise<"active" | "absent"> {
+  if (reference.type !== "office365_calendar") return readGoogleReference(reference, booking);
+  const credential = await referenceCredential(reference);
+  if (!reference.externalCalendarId) throw new ErrorWithCode(ErrorCode.BadRequest, "Missing calendar ID");
+  const event = await readOffice365Reference(credential, reference.uid, reference.externalCalendarId);
+  if (event.state === "active") assertLegacyTime(event.start, event.end, booking);
+  return event.state;
 }
 
 async function readGoogleReference(
@@ -125,7 +148,7 @@ export async function GET(request: NextRequest) {
     if (!booking || !isSalesEvent(booking.eventType))
       return NextResponse.json({ error: "Sales booking not found" }, { status: 404 });
     return NextResponse.json(
-      await bookingEvidence(booking, (reference) => readGoogleReference(reference, booking)),
+      await bookingEvidence(booking, (reference) => readReference(reference, booking)),
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch {

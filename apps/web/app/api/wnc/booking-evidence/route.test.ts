@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   credential: vi.fn(),
   calendar: vi.fn(),
   event: vi.fn(),
+  microsoft: vi.fn(),
+}));
+vi.mock("@calcom/app-store/office365calendar/lib/CalendarService", () => ({
+  readOffice365Reference: mocks.microsoft,
 }));
 vi.mock("@calcom/prisma", () => ({
   default: { booking: { findUnique: mocks.booking }, credential: { findUnique: mocks.credential } },
@@ -121,11 +125,44 @@ test("empty, unsupported and incomplete references fail closed", async () => {
   for (const references of [
     [],
     [{ ...booking.references[0], externalCalendarId: null }],
-    [{ ...booking.references[0], type: "office365_calendar" }],
+    [{ ...booking.references[0], type: "unsupported_calendar" }],
   ]) {
     mocks.booking.mockResolvedValue({ ...booking, references });
     expect((await GET(request())).status).toBe(503);
   }
+});
+
+test("Microsoft evidence uses the original credential, calendar and event, and verifies time", async () => {
+  const reference = { ...booking.references[0], type: "office365_calendar" };
+  mocks.booking.mockResolvedValue({ ...booking, references: [reference] });
+  mocks.credential.mockResolvedValue({
+    id: 1,
+    type: reference.type,
+    invalid: false,
+    delegationCredentialId: null,
+  });
+  mocks.microsoft.mockResolvedValue({
+    state: "active",
+    start: booking.startTime.toISOString(),
+    end: booking.endTime.toISOString(),
+  });
+  expect(await (await GET(request())).json()).toMatchObject({ calendarState: "active", status: "scheduled" });
+  expect(mocks.microsoft).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 1 }),
+    reference.uid,
+    reference.externalCalendarId
+  );
+  expect(mocks.event).not.toHaveBeenCalled();
+  mocks.microsoft.mockResolvedValue({
+    state: "active",
+    start: "2026-09-14T21:00:00Z",
+    end: booking.endTime.toISOString(),
+  });
+  expect((await GET(request())).status).toBe(503);
+  mocks.microsoft.mockResolvedValue({ state: "absent" });
+  expect(await (await GET(request())).json()).toMatchObject({ calendarState: "absent" });
+  mocks.microsoft.mockRejectedValue(new Error("Provider unavailable"));
+  expect((await GET(request())).status).toBe(503);
 });
 
 test("missing event type cannot authorize repairing an older import", async () => {

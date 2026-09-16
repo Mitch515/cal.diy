@@ -328,6 +328,37 @@ class Office365CalendarService implements Calendar {
     return `${userEndpoint}${calendarPath}/events/${encodeURIComponent(uid)}`;
   }
 
+  async readReference(uid: string, calendarId: string) {
+    const calendarUrl = `${await this.getUserEndpoint()}/calendars/${encodeURIComponent(calendarId)}`;
+    const calendar = await handleErrorsJson<OfficeCalendar>(
+      await this.fetcher(`${calendarUrl}?$select=id`, { method: "GET" })
+    );
+    if (calendar.id !== calendarId)
+      throw new ErrorWithCode(ErrorCode.InternalServerError, "Microsoft calendar identity differs");
+    // A calendar-level 404 must never count as a deleted invitation.
+    const response = await this.fetcher(`${calendarUrl}/events/${encodeURIComponent(uid)}`, {
+      method: "GET",
+      headers: { Prefer: 'outlook.timezone="UTC"' },
+    });
+    if (response.status === 404 || response.status === 410) return { state: "absent" as const };
+    const event = await handleErrorsJson<Event>(response);
+    if (event.id !== uid)
+      throw new ErrorWithCode(ErrorCode.InternalServerError, "Microsoft event identity differs");
+    if (event.isCancelled) return { state: "absent" as const };
+    if (
+      event.start?.timeZone !== "UTC" ||
+      event.end?.timeZone !== "UTC" ||
+      !event.start.dateTime ||
+      !event.end.dateTime
+    )
+      throw new ErrorWithCode(ErrorCode.InternalServerError, "Microsoft event UTC times are missing");
+    return {
+      state: "active" as const,
+      start: event.start.dateTime.replace(/Z?$/, "Z"),
+      end: event.end.dateTime.replace(/Z?$/, "Z"),
+    };
+  }
+
   async updateEvent(
     uid: string,
     event: CalendarServiceEvent,
@@ -822,4 +853,12 @@ class Office365CalendarService implements Calendar {
  */
 export default function BuildCalendarService(credential: CredentialForCalendarServiceWithTenantId): Calendar {
   return new Office365CalendarService(credential);
+}
+
+export function readOffice365Reference(
+  credential: CredentialForCalendarServiceWithTenantId,
+  uid: string,
+  calendarId: string
+) {
+  return new Office365CalendarService(credential).readReference(uid, calendarId);
 }
