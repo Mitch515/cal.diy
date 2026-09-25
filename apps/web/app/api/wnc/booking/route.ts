@@ -29,7 +29,13 @@ const eventFields = {
 };
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("status"), requestId }),
-  z.object({ action: z.literal("confirmation"), requestId }),
+  z.object({
+    action: z.literal("confirmation"),
+    requestId,
+    message: z
+      .object({ subject: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(6000) })
+      .optional(),
+  }),
   z.object({ action: z.literal("details"), ...eventFields }),
   z.object({
     action: z.literal("slots"),
@@ -139,6 +145,9 @@ async function snapshot(id: string) {
     setterEmail: metadata.wncSetterEmail,
     confirmationEligible: metadata.wncConfirmationEligible === "true",
     confirmationStatus: metadata.wncConfirmation?.state ?? "pending",
+    ...(metadata.wncConfirmation?.subject !== undefined && metadata.wncConfirmation.body !== undefined
+      ? { confirmationMessage: { subject: metadata.wncConfirmation.subject, body: metadata.wncConfirmation.body } }
+      : {}),
     ...(meetingUrl ? { meetingUrl } : {}),
     status: booking.rescheduled
       ? "rescheduled"
@@ -174,11 +183,15 @@ async function handler(req: NextRequest) {
     ) {
       return NextResponse.json({ error: "Microsoft meeting is not ready" }, { status: 409 });
     }
+    // WN composes the text; the booking's own Teams link must be in it.
+    if (input.message && !input.message.body.includes(receipt.meetingUrl))
+      return NextResponse.json({ error: "Confirmation must include the meeting link" }, { status: 422 });
     await submitWncConfirmation({
       ...receipt,
       eligible: receipt.confirmationEligible,
       timeZone: receipt.attendee.timeZone,
       meetingUrl: receipt.meetingUrl,
+      ...(input.message ? { message: input.message } : {}),
     });
     return NextResponse.json(await snapshot(input.requestId));
   }

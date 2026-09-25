@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
 import { z } from "zod";
 import {
@@ -155,4 +156,56 @@ test("a meeting that has started is never confirmed, even from a stuck claim", a
   ).rejects.toThrow("has started");
   expect(h.drafts()).toBe(0);
   expect(h.sends()).toBe(0);
+});
+
+const composed = {
+  subject: "Our call on Monday, September 14 at 11:00 AM Pacific",
+  body: `Hi Jamie,
+
+Personal opening.
+
+You can join us on Microsoft Teams here:
+${input.meetingUrl}
+
+Thank you,
+Quentin`,
+};
+test("a WN-composed message is drafted verbatim with Cal's own recipients", async () => {
+  const h = harness();
+  const drafted: unknown[] = [];
+  const request = h.deps.request;
+  h.deps.request = async (path, method, body) => {
+    if (path === "/messages" && method === "POST") drafted.push(body);
+    return request(path, method, body);
+  };
+  const state = await deliverWncConfirmation({ ...input, message: composed }, h.deps);
+  expect(state).toMatchObject({ state: "submitted", subject: composed.subject, body: composed.body });
+  expect(draftSchema.parse(drafted[0])).toMatchObject({
+    subject: composed.subject,
+    body: { contentType: "text", content: composed.body },
+    toRecipients: [{ emailAddress: { address: "jamie@example.org" } }],
+  });
+});
+test("a retry keeps the text of the first claim and never sends twice", async () => {
+  const h = harness(true);
+  await deliverWncConfirmation({ ...input, message: composed }, h.deps);
+  h.markSent();
+  const retried = await deliverWncConfirmation({ ...input, message: { ...composed, body: `Other ${composed.body}` } }, h.deps);
+  expect(retried).toMatchObject({ state: "submitted", body: composed.body });
+  expect(h.sends()).toBe(1);
+  expect(h.drafts()).toBe(1);
+});
+test("a claim without saved text keeps the standard wording when a message arrives later", async () => {
+  const h = harness();
+  const drafted: unknown[] = [];
+  const request = h.deps.request;
+  h.deps.request = async (path, method, body) => {
+    if (path === "/messages" && method === "POST") drafted.push(body);
+    return request(path, method, body);
+  };
+  const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
+  await h.deps.save(undefined, { key, state: "preparing", claimedAt: "2026-01-01T00:00:00.000Z" });
+  expect((await deliverWncConfirmation({ ...input, message: composed }, h.deps)).state).toBe("submitted");
+  expect(draftSchema.parse(drafted[0]).body.content).toBe(wncConfirmationContent(input).body);
+  expect(h.sends()).toBe(1);
 });

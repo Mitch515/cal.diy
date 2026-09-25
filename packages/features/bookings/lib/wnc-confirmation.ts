@@ -12,6 +12,9 @@ export const wncMailStateSchema = z.object({
   key: z.string(),
   draftId: z.string().optional(),
   claimedAt: z.string().datetime().optional(),
+  /** Saved with the first claim so every retry drafts, compares and sends the same text. */
+  subject: z.string().optional(),
+  body: z.string().optional(),
 });
 const metadataSchema = z.object({
   wncSetterEmail: z.string().email(),
@@ -50,6 +53,8 @@ export interface WncConfirmationInput {
   setterEmail: string;
   /** False for every booking made before the September 25 release. Those claims were stuck by the key-order bug and are never sent. */
   eligible: boolean;
+  /** WN's composed confirmation. Recipients stay Cal's; WN supplies the text. */
+  message?: { subject: string; body: string };
 }
 export function wncConfirmationContent(input: WncConfirmationInput) {
   const normalized = (value: string) => value.trim().toLowerCase();
@@ -91,7 +96,12 @@ export function wncConfirmationContent(input: WncConfirmationInput) {
     "Thank you,",
     "Quentin",
   ].join("\n");
+  if (input.message) return { from: ADDRESS, to, cc, subject: input.message.subject, body: input.message.body };
   return { from: ADDRESS, to, cc, subject: input.title, body };
+}
+/** The text of an existing claim wins over whatever a later retry supplies. */
+function claimedText(state: WncMailState | undefined) {
+  return state?.subject !== undefined && state.body !== undefined ? { subject: state.subject, body: state.body } : {};
 }
 function setting(key: string) {
   const value = Reflect.get(process.env, key);
@@ -137,33 +147,48 @@ export interface WncConfirmationDependencies {
   request(path: string, method?: string, body?: object): Promise<Response>;
 }
 
-/** Persist before sending. An uncertain send is only reconciled, never blindly repeated. */
-export async function deliverWncConfirmation(
-  input: WncConfirmationInput,
-  deps: WncConfirmationDependencies
-): Promise<WncMailState> {
-  if (!input.eligible)
-    throw new ErrorWithCode(ErrorCode.BadRequest, "This booking predates automatic confirmations; confirm it by hand");
-  const content = wncConfirmationContent(input);
-  const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
-  let state = await deps.load();
-  if (state?.state === "submitted") return state;
-  // A claim stuck before this fix can be retried later; never confirm a meeting that has already started.
-  if (Date.parse(input.start) <= Date.now())
+type Claim = { proceed: false; state: WncMailState } | { proceed: true; state: WncMailState; claimedNow: boolean };
+type Content = ReturnType<typeof wncConfirmationContent>;
+type Message = z.infer<typeof messageSchema>;
+
+/** Claim the confirmation, or return the state another attempt already holds. */
+async function claimConfirmation(
+  deps: WncConfirmationDependencies,
+  key: string,
+  start: string,
+  text: { subject?: string; body?: string }
+): Promise<Claim> {
+  const state = await deps.load();
+  if (state?.state === "submitted") return { proceed: false, state };
+  // A claim stuck before the key-order fix can be retried later; never confirm a meeting that has already started.
+  if (Date.parse(start) <= Date.now())
     throw new ErrorWithCode(ErrorCode.BadRequest, "The meeting has started; its confirmation is not sent");
   if (state?.state === "preparing" && Date.now() - Date.parse(state.claimedAt ?? "1970-01-01") < 180_000)
-    return state;
+    return { proceed: false, state };
   if (!state) {
-    const initial: WncMailState = { key, state: "preparing", claimedAt: new Date().toISOString() };
-    if (!(await deps.save(undefined, initial))) return (await deps.load()) ?? initial;
-    state = initial;
-  } else if (state.state === "preparing") {
-    const claimed: WncMailState = { ...state, claimedAt: new Date().toISOString() };
-    if (!(await deps.save(state, claimed))) return (await deps.load()) ?? claimed;
-    state = claimed;
+    const initial: WncMailState = { key, state: "preparing", claimedAt: new Date().toISOString(), ...text };
+    if (!(await deps.save(undefined, initial))) return { proceed: false, state: (await deps.load()) ?? initial };
+    return { proceed: true, state: initial, claimedNow: true };
   }
-  if (state.key !== key)
-    throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation identity mismatch");
+  if (state.state !== "preparing") return { proceed: true, state, claimedNow: false };
+  const claimed: WncMailState = { ...state, claimedAt: new Date().toISOString() };
+  if (!(await deps.save(state, claimed))) return { proceed: false, state: (await deps.load()) ?? claimed };
+  return { proceed: true, state: claimed, claimedNow: false };
+}
+
+function draftMatches(message: Message, content: Content): boolean {
+  const recipientList = (recipients: Message["toRecipients"]) =>
+    recipients.map((value) => value.emailAddress.address.toLowerCase()).sort();
+  return (
+    JSON.stringify(recipientList(message.toRecipients)) === JSON.stringify([content.to]) &&
+    JSON.stringify(recipientList(message.ccRecipients)) === JSON.stringify(content.cc) &&
+    message.subject === content.subject &&
+    message.body.content === content.body &&
+    message.body.contentType.toLowerCase() === "text"
+  );
+}
+
+async function findTaggedMessage(deps: WncConfirmationDependencies, key: string): Promise<Message | undefined> {
   const query = new URLSearchParams({
     $filter: `singleValueExtendedProperties/Any(p: p/id eq '${PROPERTY}' and p/value eq '${key}')`,
     $select: "id,isDraft,toRecipients,ccRecipients,subject,body",
@@ -175,54 +200,47 @@ export async function deliverWncConfirmation(
   const messages = z.object({ value: z.array(messageSchema) }).parse(await existing.json()).value;
   if (messages.length > 1)
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Duplicate confirmation drafts need review");
-  let message = messages[0];
-  if (state.state === "sending" || state.state === "uncertain") {
-    const recovered: WncMailState = {
-      ...state,
-      state: message && !message.isDraft ? "submitted" : "uncertain",
-    };
-    await deps.save(state, recovered);
-    return recovered;
-  }
-  if (!message) {
-    const created = await deps.request("/messages", "POST", {
-      subject: content.subject,
-      body: { contentType: "text", content: content.body },
-      toRecipients: [{ emailAddress: { address: content.to } }],
-      ccRecipients: content.cc.map((address) => ({ emailAddress: { address } })),
-      replyTo: [{ emailAddress: { address: ADDRESS } }],
-      singleValueExtendedProperties: [{ id: PROPERTY, value: key }],
-    });
-    if (!created.ok)
-      throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft creation failed");
-    message = messageSchema.parse(await created.json());
-  }
+  return messages[0];
+}
+
+async function createDraft(deps: WncConfirmationDependencies, key: string, content: Content): Promise<Message> {
+  const created = await deps.request("/messages", "POST", {
+    subject: content.subject,
+    body: { contentType: "text", content: content.body },
+    toRecipients: [{ emailAddress: { address: content.to } }],
+    ccRecipients: content.cc.map((address) => ({ emailAddress: { address } })),
+    replyTo: [{ emailAddress: { address: ADDRESS } }],
+    singleValueExtendedProperties: [{ id: PROPERTY, value: key }],
+  });
+  if (!created.ok) throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft creation failed");
+  return messageSchema.parse(await created.json());
+}
+
+async function readBackDraft(deps: WncConfirmationDependencies, message: Message): Promise<Message> {
   const readBack = await deps.request(
     `/messages/${encodeURIComponent(message.id)}?$select=id,isDraft,toRecipients,ccRecipients,subject,body`
   );
   if (!readBack.ok)
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft could not be read back");
-  message = messageSchema.parse(await readBack.json());
-  const recipientList = (recipients: typeof message.toRecipients) =>
-    recipients.map((value) => value.emailAddress.address.toLowerCase()).sort();
-  if (
-    JSON.stringify(recipientList(message.toRecipients)) !== JSON.stringify([content.to]) ||
-    JSON.stringify(recipientList(message.ccRecipients)) !== JSON.stringify(content.cc) ||
-    message.subject !== content.subject ||
-    message.body.content !== content.body ||
-    message.body.contentType.toLowerCase() !== "text"
-  ) {
-    throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft changed and needs review");
-  }
-  if (!message.isDraft) {
-    const submitted: WncMailState = { key, state: "submitted", draftId: message.id };
+  return messageSchema.parse(await readBack.json());
+}
+
+/** Claim the send before calling Microsoft; a lost response is recorded as uncertain, never retried. */
+async function submitDraft(
+  deps: WncConfirmationDependencies,
+  state: WncMailState,
+  identity: { key: string; draftId: string; subject?: string; body?: string },
+  isDraft: boolean
+): Promise<WncMailState> {
+  if (!isDraft) {
+    const submitted: WncMailState = { ...identity, state: "submitted" };
     await deps.save(state, submitted);
     return submitted;
   }
-  const sending: WncMailState = { key, state: "sending", draftId: message.id };
+  const sending: WncMailState = { ...identity, state: "sending" };
   if (!(await deps.save(state, sending))) return (await deps.load()) ?? sending;
   try {
-    const response = await deps.request(`/messages/${encodeURIComponent(message.id)}/send`, "POST");
+    const response = await deps.request(`/messages/${encodeURIComponent(identity.draftId)}/send`, "POST");
     const result: WncMailState = { ...sending, state: response.status === 202 ? "submitted" : "uncertain" };
     await deps.save(sending, result);
     return result;
@@ -231,6 +249,39 @@ export async function deliverWncConfirmation(
     await deps.save(sending, uncertain);
     return uncertain;
   }
+}
+
+/** Persist before sending. An uncertain send is only reconciled, never blindly repeated. */
+export async function deliverWncConfirmation(
+  input: WncConfirmationInput,
+  deps: WncConfirmationDependencies
+): Promise<WncMailState> {
+  if (!input.eligible)
+    throw new ErrorWithCode(ErrorCode.BadRequest, "This booking predates automatic confirmations; confirm it by hand");
+  const fresh = wncConfirmationContent(input);
+  const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
+  const claim = await claimConfirmation(deps, key, input.start, input.message ? { subject: fresh.subject, body: fresh.body } : {});
+  if (!claim.proceed) return claim.state;
+  const state = claim.state;
+  if (state.key !== key)
+    throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation identity mismatch");
+  const text = claimedText(state);
+  // A claim made before WN supplied text used the standard wording, so a later message cannot replace it.
+  const content = { ...(claim.claimedNow ? fresh : wncConfirmationContent({ ...input, message: undefined })), ...text };
+  const tagged = await findTaggedMessage(deps, key);
+  if (state.state === "sending" || state.state === "uncertain") {
+    const recovered: WncMailState = {
+      ...state,
+      state: tagged && !tagged.isDraft ? "submitted" : "uncertain",
+    };
+    await deps.save(state, recovered);
+    return recovered;
+  }
+  const message = await readBackDraft(deps, tagged ?? (await createDraft(deps, key, content)));
+  if (!draftMatches(message, content)) {
+    throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft changed and needs review");
+  }
+  return submitDraft(deps, state, { ...text, key, draftId: message.id }, message.isDraft);
 }
 
 export async function submitWncConfirmation(input: WncConfirmationInput) {
