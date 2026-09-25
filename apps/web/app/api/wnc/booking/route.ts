@@ -56,7 +56,8 @@ const metadataSchema = z.object({
   wncSetterEmail: z.string().email(),
   wncConfirmation: wncMailStateSchema.optional(),
   // Written only by bookings created after the September 25 release; see wnc-confirmation.ts.
-  wncConfirmationEligible: z.literal(true).optional(),
+  // A string because createBooking types booking metadata as Record<string, string>.
+  wncConfirmationEligible: z.literal("true").optional(),
 });
 const slotSchema = z.record(z.array(z.object({ time: z.string() })));
 
@@ -136,7 +137,7 @@ async function snapshot(id: string) {
       .filter((person) => person.email.toLowerCase() !== booker.email.toLowerCase())
       .map((person) => person.email),
     setterEmail: metadata.wncSetterEmail,
-    confirmationEligible: metadata.wncConfirmationEligible === true,
+    confirmationEligible: metadata.wncConfirmationEligible === "true",
     confirmationStatus: metadata.wncConfirmation?.state ?? "pending",
     ...(meetingUrl ? { meetingUrl } : {}),
     status: booking.rescheduled
@@ -348,7 +349,7 @@ async function handler(req: NextRequest) {
         wncAttendeeEmail: input.attendee.email,
         wncAttendeeTimeZone: input.attendee.timeZone,
         wncSetterEmail: input.setterEmail,
-        wncConfirmationEligible: true,
+        wncConfirmationEligible: "true",
       },
       responses: {
         name: input.attendee.name,

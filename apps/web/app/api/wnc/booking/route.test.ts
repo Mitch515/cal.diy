@@ -128,7 +128,7 @@ test("uses a server-only durable retry key without internal handoff text", async
       bookingData: expect.objectContaining({
         eventTypeId: 22,
         noEmail: true,
-        metadata: expect.objectContaining({ wncRequestId: requestId, wncConfirmationEligible: true }),
+        metadata: expect.objectContaining({ wncRequestId: requestId, wncConfirmationEligible: "true" }),
       }),
     })
   );
