@@ -21,6 +21,7 @@ const input: WncConfirmationInput = {
   organizer: { name: "Quentin", email: "quentin@getwealthnavigator.com" },
   participants: [{ name: "Louay", email: "louay@getwealthnavigator.com" }],
   setterEmail: "setter@getwealthnavigator.com",
+  eligible: true,
 };
 const draftSchema = z.object({
   subject: z.string(),
@@ -137,6 +138,14 @@ test("concurrent attempts claim one confirmation and one draft", async () => {
   await Promise.all([deliverWncConfirmation(input, h.deps), deliverWncConfirmation(input, h.deps)]);
   expect(h.sends()).toBe(1);
   expect(h.drafts()).toBe(1);
+});
+
+test("a booking made before the release never sends, even with a stuck claim and an existing draft", async () => {
+  const h = harness();
+  h.deps.load = async () => ({ key: "stuck", state: "preparing", claimedAt: "2026-09-24T18:21:05.000Z" });
+  await expect(deliverWncConfirmation({ ...input, eligible: false }, h.deps)).rejects.toThrow("predates");
+  expect(h.drafts()).toBe(0);
+  expect(h.sends()).toBe(0);
 });
 
 test("a meeting that has started is never confirmed, even from a stuck claim", async () => {

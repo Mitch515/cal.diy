@@ -48,6 +48,8 @@ export interface WncConfirmationInput {
   organizer: { name: string; email: string };
   participants: { name: string; email: string }[];
   setterEmail: string;
+  /** False for every booking made before the September 25 release. Those claims were stuck by the key-order bug and are never sent. */
+  eligible: boolean;
 }
 export function wncConfirmationContent(input: WncConfirmationInput) {
   const normalized = (value: string) => value.trim().toLowerCase();
@@ -140,6 +142,8 @@ export async function deliverWncConfirmation(
   input: WncConfirmationInput,
   deps: WncConfirmationDependencies
 ): Promise<WncMailState> {
+  if (!input.eligible)
+    throw new ErrorWithCode(ErrorCode.BadRequest, "This booking predates automatic confirmations; confirm it by hand");
   const content = wncConfirmationContent(input);
   const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
   let state = await deps.load();

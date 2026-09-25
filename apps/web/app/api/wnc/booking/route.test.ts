@@ -128,7 +128,7 @@ test("uses a server-only durable retry key without internal handoff text", async
       bookingData: expect.objectContaining({
         eventTypeId: 22,
         noEmail: true,
-        metadata: expect.objectContaining({ wncRequestId: requestId }),
+        metadata: expect.objectContaining({ wncRequestId: requestId, wncConfirmationEligible: true }),
       }),
     })
   );
@@ -297,4 +297,13 @@ test("discovery requires both founders collectively and describes both before bo
   expect((await call({ action: "details", eventTypeId: 24, durationMinutes: 60 })).status).toBe(422);
   mocks.event.mockResolvedValue({ ...event, hosts: [event.hosts[0]] });
   expect((await call({ action: "details", eventTypeId: 24, durationMinutes: 60 })).status).toBe(422);
+});
+
+test("a confirmation request for a booking made before the release is refused before any claim", async () => {
+  mocks.find.mockResolvedValue([
+    { ...record, metadata: { ...record.metadata, wncRequestId: requestId, wncConfirmation: { key: "k", state: "preparing" } } },
+  ]);
+  const response = await call({ action: "confirmation", requestId });
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain("predates automatic confirmations");
 });
