@@ -7,6 +7,8 @@ import {
   type WncConfirmationDependencies,
   type WncConfirmationInput,
   type WncMailState,
+  bodyLinksTo,
+  sameHtmlContent,
   sameWncMailState,
   wncConfirmationContent,
   wncMailStateSchema,
@@ -29,7 +31,17 @@ const draftSchema = z.object({
   body: z.object({ contentType: z.string(), content: z.string() }),
   toRecipients: z.array(z.object({ emailAddress: z.object({ address: z.string() }) })),
   ccRecipients: z.array(z.object({ emailAddress: z.object({ address: z.string() }) })),
+  attachments: z.array(z.object({ contentId: z.string(), isInline: z.boolean() })).optional(),
 });
+/** Graph's read-back of an HTML draft: a head with styles, attributes reordered, content kept. */
+function graphView(message: z.infer<typeof draftSchema> & { id: string; isDraft: boolean }) {
+  if (message.body.contentType !== "html") return message;
+  const content = `<html><head>\r\n<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><style type="text/css" style="display:none">\r\n<!--\r\np\r\n\t{margin-top:0;\r\n\tmargin-bottom:0}\r\n-->\r\n</style></head><body dir="ltr">${message.body.content.replace(
+    /<img src="([^"]*)" ([^>]*)>/g,
+    '<img $2 data-outlook-trace="F:1|T:1" src="$1">'
+  )}</body></html>`;
+  return { ...message, body: { contentType: "html", content } };
+}
 function harness(timeout = false) {
   let state: WncMailState | undefined;
   let message: (z.infer<typeof draftSchema> & { id: string; isDraft: boolean }) | undefined;
@@ -57,7 +69,7 @@ function harness(timeout = false) {
         return Response.json(message);
       }
       if (path.startsWith("/messages?")) return Response.json({ value: message ? [message] : [] });
-      return Response.json(message);
+      return Response.json(message && graphView(message));
     },
   };
   return {
@@ -69,6 +81,12 @@ function harness(timeout = false) {
     },
     tamper() {
       if (message) message.ccRecipients = [];
+    },
+    editBody(edit: (body: string) => string) {
+      if (message) message.body.content = edit(message.body.content);
+    },
+    dropAttachments() {
+      if (message) message.attachments = [];
     },
   };
 }
@@ -208,4 +226,66 @@ test("a claim without saved text keeps the standard wording when a message arriv
   expect((await deliverWncConfirmation({ ...input, message: composed }, h.deps)).state).toBe("submitted");
   expect(draftSchema.parse(drafted[0]).body.content).toBe(wncConfirmationContent(input).body);
   expect(h.sends()).toBe(1);
+});
+
+const signature = { contentId: "quentin-signature", name: "signature.jpg", contentType: "image/jpeg" as const, contentBase64: "/9j/4AAQ" };
+const html = {
+  subject: "Our call on Monday, September 14 at 11:00 AM Pacific",
+  contentType: "html" as const,
+  inlineImages: [signature],
+  body: `<div><p style="margin-top:1em;margin-bottom:1em">Hi Jamie,</p><p style="margin-top:1em;margin-bottom:1em">You can <a href="${input.meetingUrl}?a=1&amp;b=2">join on Microsoft Teams here</a>.</p><p style="margin-top:1em;margin-bottom:1em">Thank you,<br>Quentin</p></div><div id="Signature"><img src="cid:quentin-signature" width="400" height="75"></div>`,
+};
+function recordDrafts(h: ReturnType<typeof harness>) {
+  const drafted: unknown[] = [];
+  const request = h.deps.request;
+  h.deps.request = async (path, method, body) => {
+    if (path === "/messages" && method === "POST") drafted.push(body);
+    return request(path, method, body);
+  };
+  return drafted;
+}
+
+test("an HTML confirmation carries its signature as an inline attachment and survives Graph's rewrite", async () => {
+  const h = harness();
+  const drafted = recordDrafts(h);
+  expect((await deliverWncConfirmation({ ...input, message: html }, h.deps)).state).toBe("submitted");
+  expect(drafted[0]).toMatchObject({
+    body: { contentType: "html", content: html.body },
+    attachments: [
+      { "@odata.type": "#microsoft.graph.fileAttachment", contentId: "quentin-signature", isInline: true, contentBytes: "/9j/4AAQ", contentType: "image/jpeg" },
+    ],
+  });
+  expect(h.sends()).toBe(1);
+});
+
+test("an HTML draft whose words or signature changed is never sent", async () => {
+  const edited = harness();
+  const request = edited.deps.request;
+  edited.deps.request = async (path, method, body) => {
+    if (path.startsWith("/messages/draft-1?")) edited.editBody((content) => content.replace("Hi Jamie", "Hi Jim"));
+    return request(path, method, body);
+  };
+  await expect(deliverWncConfirmation({ ...input, message: html }, edited.deps)).rejects.toThrow("changed");
+  const unsigned = harness();
+  const request2 = unsigned.deps.request;
+  unsigned.deps.request = async (path, method, body) => {
+    if (path.startsWith("/messages/draft-1?")) unsigned.dropAttachments();
+    return request2(path, method, body);
+  };
+  await expect(deliverWncConfirmation({ ...input, message: html }, unsigned.deps)).rejects.toThrow("changed");
+  expect(edited.sends() + unsigned.sends()).toBe(0);
+});
+
+test("HTML comparison ignores Graph's head and attribute order but not words, links or images", () => {
+  const graph = graphView({ ...html, id: "x", isDraft: true, toRecipients: [], ccRecipients: [], body: { contentType: "html", content: html.body } }).body.content;
+  expect(sameHtmlContent(graph, html.body)).toBe(true);
+  expect(sameHtmlContent(graph.replace("?a=1", "?a=9"), html.body)).toBe(false);
+  expect(sameHtmlContent(graph.replace("cid:quentin-signature", "cid:other"), html.body)).toBe(false);
+  expect(sameHtmlContent(graph.replace("Thank you", "Thanks"), html.body)).toBe(false);
+});
+
+test("the composed body must link to the booking's own meeting", () => {
+  expect(bodyLinksTo(html.body, "html", `${input.meetingUrl}?a=1&b=2`)).toBe(true);
+  expect(bodyLinksTo(html.body, "html", "https://teams.microsoft.com/l/meetup-join/other")).toBe(false);
+  expect(bodyLinksTo(`Join here ${input.meetingUrl}`, undefined, input.meetingUrl)).toBe(true);
 });

@@ -3,7 +3,9 @@ import process from "node:process";
 import { MSTeamsLocationType } from "@calcom/app-store/constants";
 import { getRegularBookingService } from "@calcom/features/bookings/di/RegularBookingService.container";
 import {
+  bodyLinksTo,
   submitWncConfirmation,
+  wncInlineImageSchema,
   wncConfirmationConfigured,
   wncMailStateSchema,
 } from "@calcom/features/bookings/lib/wnc-confirmation";
@@ -33,7 +35,12 @@ const schema = z.discriminatedUnion("action", [
     action: z.literal("confirmation"),
     requestId,
     message: z
-      .object({ subject: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(6000) })
+      .object({
+        subject: z.string().trim().min(1).max(200),
+        body: z.string().trim().min(1).max(20_000),
+        contentType: z.literal("html").optional(),
+        inlineImages: z.array(wncInlineImageSchema).max(2).optional(),
+      })
       .optional(),
   }),
   z.object({ action: z.literal("details"), ...eventFields }),
@@ -184,7 +191,7 @@ async function handler(req: NextRequest) {
       return NextResponse.json({ error: "Microsoft meeting is not ready" }, { status: 409 });
     }
     // WN composes the text; the booking's own Teams link must be in it.
-    if (input.message && !input.message.body.includes(receipt.meetingUrl))
+    if (input.message && !bodyLinksTo(input.message.body, input.message.contentType, receipt.meetingUrl))
       return NextResponse.json({ error: "Confirmation must include the meeting link" }, { status: 422 });
     await submitWncConfirmation({
       ...receipt,

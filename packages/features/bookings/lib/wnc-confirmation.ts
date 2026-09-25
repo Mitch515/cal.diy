@@ -7,6 +7,14 @@ import { z } from "zod";
 
 const ADDRESS = "quentin@getwealthnavigator.com";
 const PROPERTY = "String {5c5b1cf8-cd3b-42fb-9103-d59ae1ec2934} Name WncConfirmation";
+/** An image referenced from an HTML body as `cid:<contentId>`, such as Quentin's signature. */
+export const wncInlineImageSchema = z.object({
+  contentId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+  name: z.string().min(1).max(100),
+  contentType: z.enum(["image/jpeg", "image/png"]),
+  contentBase64: z.string().min(1).max(400_000),
+});
+export type WncInlineImage = z.infer<typeof wncInlineImageSchema>;
 export const wncMailStateSchema = z.object({
   state: z.enum(["preparing", "draft", "sending", "submitted", "uncertain"]),
   key: z.string(),
@@ -15,6 +23,8 @@ export const wncMailStateSchema = z.object({
   /** Saved with the first claim so every retry drafts, compares and sends the same text. */
   subject: z.string().optional(),
   body: z.string().optional(),
+  contentType: z.enum(["text", "html"]).optional(),
+  inlineImages: z.array(wncInlineImageSchema).max(2).optional(),
 });
 const metadataSchema = z.object({
   wncSetterEmail: z.string().email(),
@@ -29,6 +39,7 @@ const messageSchema = z.object({
   ccRecipients: z.array(z.object({ emailAddress: z.object({ address: z.string() }) })),
   subject: z.string(),
   body: z.object({ content: z.string(), contentType: z.string() }),
+  attachments: z.array(z.object({ contentId: z.string().nullish(), isInline: z.boolean().optional() })).optional(),
 });
 export type WncMailState = z.infer<typeof wncMailStateSchema>;
 /** Field comparison: Postgres jsonb and zod reorder keys, so JSON.stringify never matches a reloaded claim. */
@@ -54,7 +65,7 @@ export interface WncConfirmationInput {
   /** False for every booking made before the September 25 release. Those claims were stuck by the key-order bug and are never sent. */
   eligible: boolean;
   /** WN's composed confirmation. Recipients stay Cal's; WN supplies the text. */
-  message?: { subject: string; body: string };
+  message?: { subject: string; body: string; contentType?: "html"; inlineImages?: WncInlineImage[] };
 }
 export function wncConfirmationContent(input: WncConfirmationInput) {
   const normalized = (value: string) => value.trim().toLowerCase();
@@ -96,12 +107,46 @@ export function wncConfirmationContent(input: WncConfirmationInput) {
     "Thank you,",
     "Quentin",
   ].join("\n");
-  if (input.message) return { from: ADDRESS, to, cc, subject: input.message.subject, body: input.message.body };
-  return { from: ADDRESS, to, cc, subject: input.title, body };
+  if (input.message) {
+    const { subject, body: composed, inlineImages = [] } = input.message;
+    const contentType: "text" | "html" = input.message.contentType ?? "text";
+    return { from: ADDRESS, to, cc, subject, body: composed, contentType, inlineImages };
+  }
+  return { from: ADDRESS, to, cc, subject: input.title, body, contentType: "text" as const, inlineImages: [] };
 }
-/** The text of an existing claim wins over whatever a later retry supplies. */
-function claimedText(state: WncMailState | undefined) {
-  return state?.subject !== undefined && state.body !== undefined ? { subject: state.subject, body: state.body } : {};
+type ClaimedMessage = Pick<WncMailState, "subject" | "body" | "contentType" | "inlineImages">;
+/** The message of an existing claim wins over whatever a later retry supplies. */
+function claimedMessage(state: WncMailState | undefined): ClaimedMessage {
+  if (state?.subject === undefined || state.body === undefined) return {};
+  return { subject: state.subject, body: state.body, contentType: state.contentType ?? "text", inlineImages: state.inlineImages ?? [] };
+}
+const ENTITIES: Record<string, string> = { "&nbsp;": " ", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&amp;": "&" };
+const decodeHtml = (text: string) => text.replace(/&(?:nbsp|lt|gt|quot|#39|amp);/g, (entity) => ENTITIES[entity] ?? entity);
+/** Values of one attribute across one tag, for example every link's href. Graph keeps double quotes but reorders attributes. */
+function attributeValues(html: string, tag: string, attribute: string) {
+  const tags = html.match(new RegExp(`<${tag}\\b[^>]*>`, "gi")) ?? [];
+  return tags
+    .map((element) => new RegExp(`\\b${attribute}="([^"]*)"`, "i").exec(element)?.[1])
+    .filter((value): value is string => value !== undefined)
+    .map(decodeHtml)
+    .sort();
+}
+function visibleText(html: string) {
+  const withoutHead = html.replace(/<head[\s\S]*?<\/head>/gi, "").replace(/<(style|script)[\s\S]*?<\/\1>/gi, "");
+  return decodeHtml(withoutHead.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
+}
+/**
+ * Graph rewrites an HTML draft when it is read back (it adds a head and styles and reorders attributes),
+ * so HTML drafts are compared by what the reader sees and where the links and images point.
+ */
+export function sameHtmlContent(left: string, right: string) {
+  const same = (tag: string, attribute: string) =>
+    JSON.stringify(attributeValues(left, tag, attribute)) === JSON.stringify(attributeValues(right, tag, attribute));
+  return visibleText(left) === visibleText(right) && same("a", "href") && same("img", "src");
+}
+/** WN's composed body must point at the booking's own Teams meeting. */
+export function bodyLinksTo(body: string, contentType: "text" | "html" | undefined, url: string) {
+  return contentType === "html" ? attributeValues(body, "a", "href").includes(url) : body.includes(url);
 }
 function setting(key: string) {
   const value = Reflect.get(process.env, key);
@@ -156,7 +201,7 @@ async function claimConfirmation(
   deps: WncConfirmationDependencies,
   key: string,
   start: string,
-  text: { subject?: string; body?: string }
+  text: ClaimedMessage
 ): Promise<Claim> {
   const state = await deps.load();
   if (state?.state === "submitted") return { proceed: false, state };
@@ -176,6 +221,15 @@ async function claimConfirmation(
   return { proceed: true, state: claimed, claimedNow: false };
 }
 
+function bodyMatches(message: Message, content: Content) {
+  if (message.body.contentType.toLowerCase() !== content.contentType) return false;
+  if (content.contentType === "text") return message.body.content === content.body;
+  const attached = new Set(
+    (message.attachments ?? []).filter((file) => file.isInline).map((file) => file.contentId?.replace(/^<|>$/g, ""))
+  );
+  return sameHtmlContent(message.body.content, content.body) && content.inlineImages.every((image) => attached.has(image.contentId));
+}
+
 function draftMatches(message: Message, content: Content): boolean {
   const recipientList = (recipients: Message["toRecipients"]) =>
     recipients.map((value) => value.emailAddress.address.toLowerCase()).sort();
@@ -183,8 +237,7 @@ function draftMatches(message: Message, content: Content): boolean {
     JSON.stringify(recipientList(message.toRecipients)) === JSON.stringify([content.to]) &&
     JSON.stringify(recipientList(message.ccRecipients)) === JSON.stringify(content.cc) &&
     message.subject === content.subject &&
-    message.body.content === content.body &&
-    message.body.contentType.toLowerCase() === "text"
+    bodyMatches(message, content)
   );
 }
 
@@ -206,11 +259,23 @@ async function findTaggedMessage(deps: WncConfirmationDependencies, key: string)
 async function createDraft(deps: WncConfirmationDependencies, key: string, content: Content): Promise<Message> {
   const created = await deps.request("/messages", "POST", {
     subject: content.subject,
-    body: { contentType: "text", content: content.body },
+    body: { contentType: content.contentType, content: content.body },
     toRecipients: [{ emailAddress: { address: content.to } }],
     ccRecipients: content.cc.map((address) => ({ emailAddress: { address } })),
     replyTo: [{ emailAddress: { address: ADDRESS } }],
     singleValueExtendedProperties: [{ id: PROPERTY, value: key }],
+    ...(content.inlineImages.length > 0
+      ? {
+          attachments: content.inlineImages.map((image) => ({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            name: image.name,
+            contentType: image.contentType,
+            contentBytes: image.contentBase64,
+            contentId: image.contentId,
+            isInline: true,
+          })),
+        }
+      : {}),
   });
   if (!created.ok) throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft creation failed");
   return messageSchema.parse(await created.json());
@@ -218,7 +283,7 @@ async function createDraft(deps: WncConfirmationDependencies, key: string, conte
 
 async function readBackDraft(deps: WncConfirmationDependencies, message: Message): Promise<Message> {
   const readBack = await deps.request(
-    `/messages/${encodeURIComponent(message.id)}?$select=id,isDraft,toRecipients,ccRecipients,subject,body`
+    `/messages/${encodeURIComponent(message.id)}?$select=id,isDraft,toRecipients,ccRecipients,subject,body&$expand=attachments($select=contentId,isInline)`
   );
   if (!readBack.ok)
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation draft could not be read back");
@@ -229,7 +294,7 @@ async function readBackDraft(deps: WncConfirmationDependencies, message: Message
 async function submitDraft(
   deps: WncConfirmationDependencies,
   state: WncMailState,
-  identity: { key: string; draftId: string; subject?: string; body?: string },
+  identity: ClaimedMessage & { key: string; draftId: string },
   isDraft: boolean
 ): Promise<WncMailState> {
   if (!isDraft) {
@@ -260,12 +325,15 @@ export async function deliverWncConfirmation(
     throw new ErrorWithCode(ErrorCode.BadRequest, "This booking predates automatic confirmations; confirm it by hand");
   const fresh = wncConfirmationContent(input);
   const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
-  const claim = await claimConfirmation(deps, key, input.start, input.message ? { subject: fresh.subject, body: fresh.body } : {});
+  const offered: ClaimedMessage = input.message
+    ? { subject: fresh.subject, body: fresh.body, contentType: fresh.contentType, inlineImages: fresh.inlineImages }
+    : {};
+  const claim = await claimConfirmation(deps, key, input.start, offered);
   if (!claim.proceed) return claim.state;
   const state = claim.state;
   if (state.key !== key)
     throw new ErrorWithCode(ErrorCode.InternalServerError, "Confirmation identity mismatch");
-  const text = claimedText(state);
+  const text = claimedMessage(state);
   // A claim made before WN supplied text used the standard wording, so a later message cannot replace it.
   const content = { ...(claim.claimedNow ? fresh : wncConfirmationContent({ ...input, message: undefined })), ...text };
   const tagged = await findTaggedMessage(deps, key);
