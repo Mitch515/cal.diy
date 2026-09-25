@@ -6,13 +6,15 @@ import {
   type WncConfirmationDependencies,
   type WncConfirmationInput,
   type WncMailState,
+  sameWncMailState,
   wncConfirmationContent,
+  wncMailStateSchema,
 } from "./wnc-confirmation";
 
 const input: WncConfirmationInput = {
   uid: "native-test",
   title: "Client acquisition discussion with Jamie",
-  start: "2026-09-14T18:00:00.000Z",
+  start: "2030-09-14T18:00:00.000Z",
   meetingUrl: "https://teams.microsoft.com/l/meetup-join/demo",
   timeZone: "America/Los_Angeles",
   attendee: { name: "Jamie", email: "jamie@example.org" },
@@ -114,9 +116,34 @@ test("a draft with altered recipients cannot be sent", async () => {
   expect(h.sends()).toBe(0);
 });
 
+test("a claim reloaded with reordered keys still advances to one sent confirmation", async () => {
+  // Postgres jsonb and zod both reorder keys, so the stored claim never matches the in-memory one as a string.
+  const h = harness();
+  let stored: unknown;
+  h.deps.load = async () => wncMailStateSchema.optional().parse(stored && JSON.parse(JSON.stringify(stored)));
+  h.deps.save = async (previous, next) => {
+    const current = await h.deps.load();
+    if (!sameWncMailState(current, previous)) return false;
+    stored = Object.fromEntries(Object.entries(next).reverse());
+    return true;
+  };
+  expect((await deliverWncConfirmation(input, h.deps)).state).toBe("submitted");
+  expect(h.sends()).toBe(1);
+  expect(h.drafts()).toBe(1);
+});
+
 test("concurrent attempts claim one confirmation and one draft", async () => {
   const h = harness();
   await Promise.all([deliverWncConfirmation(input, h.deps), deliverWncConfirmation(input, h.deps)]);
   expect(h.sends()).toBe(1);
   expect(h.drafts()).toBe(1);
+});
+
+test("a meeting that has started is never confirmed, even from a stuck claim", async () => {
+  const h = harness();
+  await expect(
+    deliverWncConfirmation({ ...input, start: "2026-09-23T14:00:00.000Z" }, h.deps)
+  ).rejects.toThrow("has started");
+  expect(h.drafts()).toBe(0);
+  expect(h.sends()).toBe(0);
 });
