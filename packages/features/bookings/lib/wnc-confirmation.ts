@@ -28,6 +28,16 @@ const messageSchema = z.object({
   body: z.object({ content: z.string(), contentType: z.string() }),
 });
 export type WncMailState = z.infer<typeof wncMailStateSchema>;
+/** Field comparison: Postgres jsonb and zod reorder keys, so JSON.stringify never matches a reloaded claim. */
+export function sameWncMailState(left: WncMailState | undefined, right: WncMailState | undefined) {
+  if (!left || !right) return left === right;
+  return (
+    left.state === right.state &&
+    left.key === right.key &&
+    left.draftId === right.draftId &&
+    left.claimedAt === right.claimedAt
+  );
+}
 export interface WncConfirmationInput {
   uid: string;
   title: string;
@@ -38,6 +48,8 @@ export interface WncConfirmationInput {
   organizer: { name: string; email: string };
   participants: { name: string; email: string }[];
   setterEmail: string;
+  /** False for every booking made before the September 25 release. Those claims were stuck by the key-order bug and are never sent. */
+  eligible: boolean;
 }
 export function wncConfirmationContent(input: WncConfirmationInput) {
   const normalized = (value: string) => value.trim().toLowerCase();
@@ -130,10 +142,15 @@ export async function deliverWncConfirmation(
   input: WncConfirmationInput,
   deps: WncConfirmationDependencies
 ): Promise<WncMailState> {
+  if (!input.eligible)
+    throw new ErrorWithCode(ErrorCode.BadRequest, "This booking predates automatic confirmations; confirm it by hand");
   const content = wncConfirmationContent(input);
   const key = createHash("sha256").update(`${input.uid}:initial-confirmation`).digest("hex");
   let state = await deps.load();
   if (state?.state === "submitted") return state;
+  // A claim stuck before this fix can be retried later; never confirm a meeting that has already started.
+  if (Date.parse(input.start) <= Date.now())
+    throw new ErrorWithCode(ErrorCode.BadRequest, "The meeting has started; its confirmation is not sent");
   if (state?.state === "preparing" && Date.now() - Date.parse(state.claimedAt ?? "1970-01-01") < 180_000)
     return state;
   if (!state) {
@@ -232,7 +249,7 @@ export async function submitWncConfirmation(input: WncConfirmationInput) {
         select: { id: true, metadata: true, updatedAt: true },
       });
       const metadata = metadataSchema.parse(booking.metadata);
-      if (JSON.stringify(metadata.wncConfirmation) !== JSON.stringify(previous)) return false;
+      if (!sameWncMailState(metadata.wncConfirmation, previous)) return false;
       if (!booking.metadata || typeof booking.metadata !== "object" || Array.isArray(booking.metadata))
         return false;
       const saved = await prisma.booking.updateMany({
