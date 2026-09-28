@@ -301,17 +301,24 @@ class Office365CalendarService implements Calendar {
       const calendarResponse = await this.fetcher(`${calendarUrl}?$select=owner`, { method: "GET" });
       const calendar = await handleErrorsJson<OfficeCalendar>(calendarResponse);
 
+      const office365Event = this.translateEvent(event, calendar.owner?.address);
       const response = await this.fetcher(`${calendarUrl}/events`, {
         method: "POST",
-        body: JSON.stringify(this.translateEvent(event, calendar.owner?.address)),
+        body: JSON.stringify(office365Event),
       });
 
       const responseJson = await handleErrorsJson<
         NewCalendarEventType & { iCalUId: string; onlineMeeting?: { joinUrl?: string } }
       >(response);
 
-      if (responseJson?.onlineMeeting?.joinUrl) {
-        responseJson.url = responseJson?.onlineMeeting?.joinUrl;
+      let joinUrl = responseJson?.onlineMeeting?.joinUrl;
+      if (!joinUrl && office365Event.isOnlineMeeting && responseJson?.id) {
+        joinUrl = await this.ensureTeamsJoinUrl(
+          `${calendarUrl}/events/${encodeURIComponent(responseJson.id)}`
+        );
+      }
+      if (joinUrl) {
+        responseJson.url = joinUrl;
       }
 
       return { ...responseJson, iCalUID: responseJson.iCalUId };
@@ -320,6 +327,32 @@ class Office365CalendarService implements Calendar {
 
       throw error;
     }
+  }
+
+  // Outlook sometimes saves a Teams booking without its Teams meeting and still returns 201, or fills
+  // the join link in a moment later. Re-read, ask for Teams again, and log loudly if it never appears.
+  private async ensureTeamsJoinUrl(eventUrl: string): Promise<string | undefined> {
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+        const current = await handleErrorsJson<Event>(
+          await this.fetcher(`${eventUrl}?$select=isOnlineMeeting,onlineMeeting`, { method: "GET" })
+        );
+        if (current.onlineMeeting?.joinUrl) return current.onlineMeeting.joinUrl;
+        if (!current.isOnlineMeeting) {
+          await handleErrorsJson(
+            await this.fetcher(eventUrl, {
+              method: "PATCH",
+              body: JSON.stringify({ isOnlineMeeting: true, onlineMeetingProvider: "teamsForBusiness" }),
+            })
+          );
+        }
+      }
+    } catch (error) {
+      this.log.error("Microsoft Teams link recovery failed", error);
+    }
+    this.log.error(`Microsoft Teams booking has no Teams link: ${eventUrl}`);
+    return undefined;
   }
 
   private async getEventUrl(uid: string, externalCalendarId?: string | null) {
