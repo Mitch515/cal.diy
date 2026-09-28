@@ -187,3 +187,57 @@ describe("Microsoft shared calendar host attendance", () => {
     expect(requestRaw.mock.calls[0][0].url).toBe("https://graph.microsoft.com/v1.0/me/events/event%2Fid%3D");
   });
 });
+
+describe("Microsoft Teams link on new bookings", () => {
+  beforeEach(() => requestRaw.mockReset());
+  const joinUrl = "https://teams.microsoft.com/l/meetup-join/abc";
+  const json = (body: object): Response => new Response(JSON.stringify(body));
+  const methods = (): (string | undefined)[] =>
+    requestRaw.mock.calls.map(([request]) => request.options.method);
+
+  it("asks Outlook for Teams again when the event was saved without it", async () => {
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(json({ id: "event", isOnlineMeeting: false }));
+    requestRaw.mockResolvedValueOnce(json({ isOnlineMeeting: false }));
+    requestRaw.mockResolvedValueOnce(json({ id: "event" }));
+    requestRaw.mockResolvedValueOnce(json({ isOnlineMeeting: true, onlineMeeting: { joinUrl } }));
+    const created = await BuildCalendarService(credential).createEvent(booking(), 25);
+    expect(created.url).toBe(joinUrl);
+    expect(methods()).toEqual(["GET", "POST", "GET", "PATCH", "GET"]);
+    expect(JSON.parse(String(requestRaw.mock.calls[3][0].options.body))).toEqual({
+      isOnlineMeeting: true,
+      onlineMeetingProvider: "teamsForBusiness",
+    });
+  });
+
+  it("re-reads without patching when Teams is on but the link arrives late", async () => {
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(json({ id: "event", isOnlineMeeting: true }));
+    requestRaw.mockResolvedValueOnce(json({ isOnlineMeeting: true, onlineMeeting: { joinUrl } }));
+    const created = await BuildCalendarService(credential).createEvent(booking(), 25);
+    expect(created.url).toBe(joinUrl);
+    expect(methods()).toEqual(["GET", "POST", "GET"]);
+  });
+
+  it("keeps the booking when the link never appears", async () => {
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(json({ id: "event", iCalUId: "ical" }));
+    requestRaw.mockImplementation(async () => json({ isOnlineMeeting: true }));
+    const created = await BuildCalendarService(credential).createEvent(booking(), 25);
+    expect(created.iCalUID).toBe("ical");
+    expect(created.url).toBeUndefined();
+    expect(methods()).toEqual(["GET", "POST", "GET", "GET", "GET"]);
+  });
+
+  it("makes no extra calls when Outlook returns the link or the booking is not Teams", async () => {
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(json({ id: "event", onlineMeeting: { joinUrl } }));
+    expect((await BuildCalendarService(credential).createEvent(booking(), 25)).url).toBe(joinUrl);
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(json({ id: "event" }));
+    const phone = booking();
+    phone.location = "Phone call";
+    await BuildCalendarService(credential).createEvent(phone, 25);
+    expect(methods()).toEqual(["GET", "POST", "GET", "POST"]);
+  });
+});
