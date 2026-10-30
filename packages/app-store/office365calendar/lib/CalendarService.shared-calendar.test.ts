@@ -2,7 +2,7 @@ import { MSTeamsLocationType } from "@calcom/app-store/constants";
 import type { CalendarServiceEvent } from "@calcom/types/Calendar";
 import type { CredentialForCalendarServiceWithTenantId } from "@calcom/types/Credential";
 import { getFixedT } from "i18next";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import BuildCalendarService from "./CalendarService";
 
@@ -101,7 +101,10 @@ describe("Microsoft shared calendar host attendance", () => {
       { emailAddress: { address: "candidate@example.com" }, type: "required" },
       { emailAddress: { address: "host@example.com" }, type: "required" },
     ]);
-    expect(mutationPayload().start).toEqual({ dateTime: "2026-09-16T14:45:00", timeZone: "America/Toronto" });
+    expect(mutationPayload().start).toEqual({
+      dateTime: "2026-09-16T14:45:00",
+      timeZone: "Eastern Standard Time",
+    });
   });
 
   it("does not invite the host again when they own the calendar", async () => {
@@ -239,5 +242,82 @@ describe("Microsoft Teams link on new bookings", () => {
     phone.location = "Phone call";
     await BuildCalendarService(credential).createEvent(phone, 25);
     expect(methods()).toEqual(["GET", "POST", "GET", "POST"]);
+  });
+});
+
+describe("Outlook event times across a daylight saving change", () => {
+  afterEach(() => vi.useRealTimers());
+
+  async function createdTimes(timeZone: string, bookedAt: string, startTime: string, endTime: string) {
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date(bookedAt) });
+    requestRaw.mockReset();
+    requestRaw.mockResolvedValueOnce(ownerResponse("owner@example.com"));
+    requestRaw.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ id: "event", onlineMeeting: { joinUrl: "https://teams.microsoft.com/x" } })
+      )
+    );
+    const event = booking();
+    event.organizer.timeZone = timeZone;
+    event.startTime = startTime;
+    event.endTime = endTime;
+    await BuildCalendarService(credential).createEvent(event, 25);
+    const { start, end } = mutationPayload();
+    return { start, end };
+  }
+
+  // Booking 136: made on Fri 30 Oct (CDT) for Tue 3 Nov 4:00 PM ET (CST). Exchange read
+  // "America/Winnipeg" at the booking day's -05:00 and stored 20:00Z instead of 21:00Z.
+  it("names the zone so Outlook applies the meeting day's offset, booked in October for November", async () => {
+    expect(
+      await createdTimes(
+        "America/Winnipeg",
+        "2026-10-30T14:11:39Z",
+        "2026-11-03T21:00:00Z",
+        "2026-11-03T21:30:00Z"
+      )
+    ).toEqual({
+      start: { dateTime: "2026-11-03T15:00:00", timeZone: "Central Standard Time" },
+      end: { dateTime: "2026-11-03T15:30:00", timeZone: "Central Standard Time" },
+    });
+    expect(
+      await createdTimes(
+        "America/New_York",
+        "2026-10-30T14:11:39Z",
+        "2026-11-03T21:00:00Z",
+        "2026-11-03T21:30:00Z"
+      )
+    ).toEqual({
+      start: { dateTime: "2026-11-03T16:00:00", timeZone: "Eastern Standard Time" },
+      end: { dateTime: "2026-11-03T16:30:00", timeZone: "Eastern Standard Time" },
+    });
+  });
+
+  it("names the zone so Outlook applies the meeting day's offset, booked in March before the change", async () => {
+    expect(
+      await createdTimes(
+        "America/Winnipeg",
+        "2027-03-10T15:00:00Z",
+        "2027-03-16T20:00:00Z",
+        "2027-03-16T20:30:00Z"
+      )
+    ).toEqual({
+      start: { dateTime: "2027-03-16T15:00:00", timeZone: "Central Standard Time" },
+      end: { dateTime: "2027-03-16T15:30:00", timeZone: "Central Standard Time" },
+    });
+  });
+
+  it("sends the UTC instant when the zone has no Windows name", async () => {
+    expect(
+      await createdTimes(
+        "America/Ciudad_Juarez",
+        "2026-10-30T14:11:39Z",
+        "2026-11-03T21:00:00Z",
+        "2026-11-03T21:30:00Z"
+      )
+    ).toEqual({
+      start: { dateTime: "2026-11-03T21:00:00", timeZone: "UTC" },
+      end: { dateTime: "2026-11-03T21:30:00", timeZone: "UTC" },
+    });
   });
 });

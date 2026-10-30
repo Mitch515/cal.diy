@@ -23,7 +23,7 @@ import type {
 import type { CredentialForCalendarServiceWithTenantId } from "@calcom/types/Credential";
 import type { Event, Calendar as OfficeCalendar, User } from "@microsoft/microsoft-graph-types-beta";
 import type { DefaultBodyType } from "msw";
-import { findIana } from "windows-iana";
+import { findIana, findWindows } from "windows-iana";
 import { getTokenObjectFromCredential } from "../../_utils/oauth/getTokenObjectFromCredential";
 import { OAuthManager } from "../../_utils/oauth/OAuthManager";
 import { oAuthManagerHelper } from "../../_utils/oauth/oAuthManagerHelper";
@@ -54,6 +54,20 @@ interface BodyValue {
   end: { dateTime: string };
   evt: { showAs: string };
   start: { dateTime: string };
+}
+
+/**
+ * Outlook applies daylight saving reliably only to Windows zone names. Given some IANA names
+ * (America/Winnipeg), Exchange kept the offset of the day the booking was made, so a booking made
+ * in October for a date after the November change landed an hour early. Send the Windows name for
+ * the same zone, or the UTC instant when the zone has none.
+ */
+function toGraphDateTime(date: string, ianaTimeZone: string) {
+  const [windowsTimeZone] = findWindows(ianaTimeZone);
+  if (!windowsTimeZone) {
+    return { dateTime: dayjs(date).utc().format("YYYY-MM-DDTHH:mm:ss"), timeZone: "UTC" };
+  }
+  return { dateTime: dayjs(date).tz(ianaTimeZone).format("YYYY-MM-DDTHH:mm:ss"), timeZone: windowsTimeZone };
 }
 
 class Office365CalendarService implements Calendar {
@@ -580,14 +594,8 @@ class Office365CalendarService implements Calendar {
         contentType: isOnlineMeeting ? "html" : "text",
         content,
       },
-      start: {
-        dateTime: dayjs(event.startTime).tz(event.organizer.timeZone).format("YYYY-MM-DDTHH:mm:ss"),
-        timeZone: event.organizer.timeZone,
-      },
-      end: {
-        dateTime: dayjs(event.endTime).tz(event.organizer.timeZone).format("YYYY-MM-DDTHH:mm:ss"),
-        timeZone: event.organizer.timeZone,
-      },
+      start: toGraphDateTime(event.startTime, event.organizer.timeZone),
+      end: toGraphDateTime(event.endTime, event.organizer.timeZone),
       hideAttendees: !event.seatsPerTimeSlot ? false : !event.seatsShowAttendees,
       attendees: [
         ...event.attendees.map((attendee) => ({
